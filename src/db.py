@@ -151,6 +151,9 @@ class DBWriter:
     def flush(self) -> None:
         self._queue.join()
 
+    def queue_depth(self) -> int:
+        return self._queue.qsize()
+
 
 class Database:
     def __init__(self, db_path: str) -> None:

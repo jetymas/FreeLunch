@@ -25,5 +25,13 @@ def test_chat_completion_streaming(client):
 
 def test_admin_endpoints(client):
     assert client.get("/admin/models").status_code == 200
-    assert client.get("/admin/health").status_code == 200
+
+    health_response = client.get("/admin/health")
+    assert health_response.status_code == 200
+    health_payload = health_response.json()
+    assert "bootstrap" in health_payload
+    assert "db" in health_payload
+    assert "models" in health_payload
+    assert "scheduler" in health_payload
+
     assert client.post("/admin/refresh").status_code == 200

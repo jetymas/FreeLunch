@@ -2,79 +2,66 @@
 
 ## Overall status
 
-The current codebase is an **early scaffold / MVP stub** and does not yet implement most of the production behaviors required by the spec.
+The codebase is now an **MVP-plus scaffold**: core request flow works end-to-end, but several spec-level production requirements are still pending.
 
 ## What is already in place
 
 - FastAPI app bootstrap with lifespan startup/shutdown wiring.
 - SQLite initialization plus a dedicated writer thread abstraction.
-- Basic provider registry with an OpenRouter adapter placeholder.
-- Core endpoints present: `/healthz`, `/readyz`, `/v1/models`, `/v1/chat/completions`.
-- Minimal discovery/ranking/health pass flow invoked at startup.
+- Provider registry with an OpenRouter adapter that supports discovery + chat completions.
+- Core endpoints implemented: `/healthz`, `/readyz`, `/v1/models`, `/v1/chat/completions`.
+- Bounded multi-candidate routing with capability filters and failover attempts.
+- Startup discovery/ranking/health bootstrap and recurring scheduler jobs.
+- Admin endpoints present: `/admin/models`, `/admin/health`, `/admin/refresh`.
+- `/admin/health` now includes richer diagnostics (bootstrap state, queue depth, model/provider stats, scheduler job status, recent errors).
 
 ## Major gaps still to implement
 
-### 1) Data model mismatch vs spec (high priority)
+### 1) Data model still partial vs full spec (high priority)
 
-The database schema is significantly smaller than the spec’s required schema.
+- `models` still lacks some spec fields and full normalization requirements.
+- `request_log` includes key telemetry but still misses parts of the complete schema/semantics.
+- `leaderboard_cache` and `config_overrides` remain simplified vs spec reference.
+- Additional indexes and stricter timestamp conventions should be aligned to spec wording.
 
-- `models` table currently lacks many required identity/capability/performance/cooldown/composite-score fields.
-- `request_log` lacks required telemetry fields (attempt index, fallback flags, token usage, request source, etc.).
-- `leaderboard_cache` and `config_overrides` structures are simplified and don’t match required keys.
-- Required indexes and canonical timestamp conventions are not fully implemented.
+### 2) Provider abstraction depth is still limited (high priority)
 
-### 2) Provider abstraction is incomplete (high priority)
+- Only OpenRouter is currently integrated; the boundary exists but extensibility is still lightly tested.
+- Error normalization exists but should be expanded to fully match spec categories and retry semantics.
+- Streaming pass-through behavior should be upgraded from minimal relay shape to provider-accurate chunk handling.
 
-- `src/providers/base.py` only defines a minimal `Protocol`; typed result/error model required by spec is missing.
-- OpenRouter adapter is a stub (hardcoded model discovery + echo response), not real OpenRouter API integration.
-- Provider error normalization and retryability classification are not implemented.
+### 3) Proxy/API parity gaps (high priority)
 
-### 3) Routing/failover behavior not implemented to spec (high priority)
+- `/admin/models/{id}`, enable/disable model endpoints, and `/admin/logs` are still missing.
+- `/admin/refresh` currently queues intent; it should execute full refresh orchestration semantics as specified.
+- Auth and readiness behavior exist but need broader compliance validation against all spec edge cases.
 
-- Routing currently picks one model only; bounded multi-candidate failover is missing.
-- Capability filtering is minimal (`tools` only) and missing full required constraints (vision, streaming, structured output, context window, output limits, cooldown).
-- No dynamic request-time preference overrides from config/admin paths.
+### 4) Health/ranking strategy sophistication (high priority)
 
-### 4) Proxy/API behavior is incomplete (high priority)
+- Health remains mostly simple and does not yet implement full passive-first + adaptive probe policy.
+- Ranking formula is still basic and does not fully combine benchmark cache + request telemetry weighting as specified.
+- Probe budgets/cooldown policy tuning and observability need deeper implementation.
 
-- `/v1/chat/completions` does not implement streaming behavior.
-- Readiness failure handling does not return spec-required `Retry-After` semantics.
-- Gateway auth handling is not enforced.
-- Admin API endpoints described by spec are missing (model inspection, refresh triggers, health/status detail endpoints).
+### 5) Config and override model completeness (medium priority)
 
-### 5) Background jobs and health strategy are mostly unimplemented (high priority)
+- Env + basic `config.yaml` loading works, but full typed config surface remains incomplete.
+- Runtime override precedence exists only partially and is not fully admin-wired.
 
-- Scheduler is created but no periodic jobs are registered.
-- Health logic is a startup-only optimistic mark-healthy pass; passive-first telemetry and adaptive probes are missing.
-- Ranking is simplistic score adjustment and does not use benchmark cache + request telemetry weighting from spec.
+### 6) Test/CI and repository standards (high priority)
 
-### 6) Config system is underspecified (medium priority)
+- Basic pytest coverage is green, but spec-level module and behavior coverage remains incomplete.
+- CI matrix currently lacks complete lint/typecheck/release checks described in the spec.
+- Required project docs/workflows (e.g., `CONTRIBUTING.md`, `CHANGELOG.md`, release workflow details) still need completion.
 
-- Env loading exists, but full typed `config.yaml` support and override precedence model are missing.
-- Runtime override table integration (`config_overrides`) is not wired.
+## Suggested implementation order (updated)
 
-### 7) Test suite and quality gates are below spec expectations (high priority)
+1. **Close admin API parity**: model detail/enable/disable/log endpoints + refresh orchestration.
+2. **Deepen health + ranking**: passive telemetry weighting, adaptive probes, cooldown policy.
+3. **Finalize schema alignment**: fill remaining `models`/`request_log`/cache fields + indexes.
+4. **Harden provider boundary**: richer error mapping and streaming behavior correctness.
+5. **Complete config precedence**: full `config.yaml` surface and runtime override wiring.
+6. **Raise quality bar**: broaden tests, lint/typecheck/release workflows, and docs.
 
-- Current tests include import/API contract mismatches and fail at collection.
-- Spec-required module-level coverage (db/discover/ranking/routing/health/proxy/scheduler/providers) is not present.
-- CI currently runs only basic pytest; lint/typecheck matrix and container checks are incomplete.
+## Pending changes note
 
-### 8) Repository/infrastructure docs and workflows are incomplete (medium priority)
-
-- Missing required files from spec: `CONTRIBUTING.md`, `CHANGELOG.md`, release workflow.
-- Docker and compose definitions are minimal and differ from the spec’s production/deployment guidance.
-- `pyproject.toml` is partial vs required project metadata + lint configuration.
-
-## Suggested implementation order
-
-1. **Stabilize contracts first**: finalize provider base types/errors + schema migrations matching spec.
-2. **Implement real OpenRouter adapter**: discovery, inference, error mapping, token extraction.
-3. **Build routing candidate pipeline**: capability filters, cooldown checks, failover attempts.
-4. **Finish proxy compatibility**: streaming + consistent OpenAI-style responses + readiness/auth semantics.
-5. **Add scheduler jobs**: discovery/ranking/health/admin refresh tasks.
-6. **Backfill observability**: request log completeness, admin endpoints, leaderboard cache ingestion.
-7. **Raise quality bar**: rewrite tests to match implemented contracts and add lint/typecheck/release workflows.
-
-## Immediate blocker to address first
-
-`pytest` currently fails during collection because `tests/test_api.py` imports `ChatResult` and `ProviderRetryableError` that do not exist in `src/providers/base.py`. This indicates the tests and runtime contracts have diverged and should be reconciled before further feature work.
+This document has been refreshed to reflect implemented work from the recent admin-health observability PR and to re-baseline remaining gaps.
