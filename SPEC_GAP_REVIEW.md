@@ -30,11 +30,11 @@ The codebase is now an **MVP-plus scaffold**: core request flow works end-to-end
 - Error normalization exists but should be expanded to fully match spec categories and retry semantics.
 - Streaming pass-through behavior should be upgraded from minimal relay shape to provider-accurate chunk handling.
 
-### 3) Proxy/API parity gaps (high priority)
+### 3) Proxy/API parity gaps (partially closed, medium priority)
 
-- `/admin/models/{id}`, enable/disable model endpoints, and `/admin/logs` are still missing.
-- `/admin/refresh` currently queues intent; it should execute full refresh orchestration semantics as specified.
-- Auth and readiness behavior exist but need broader compliance validation against all spec edge cases.
+- ✅ Added `/admin/models/{id}`, `/admin/models/{id}/disable`, `/admin/models/{id}/enable`, and `/admin/logs`.
+- ✅ `/admin/refresh` now executes under an app-level async lock to prevent overlapping manual refresh runs and performs immediate orchestration.
+- Remaining: deeper auth/readiness edge-case parity validation and full spec-aligned error/status mapping under all provider failure classes.
 
 ### 4) Health/ranking strategy sophistication (high priority)
 
@@ -55,12 +55,11 @@ The codebase is now an **MVP-plus scaffold**: core request flow works end-to-end
 
 ## Suggested implementation order (updated)
 
-1. **Close admin API parity**: model detail/enable/disable/log endpoints + refresh orchestration.
-2. **Deepen health + ranking**: passive telemetry weighting, adaptive probes, cooldown policy.
-3. **Finalize schema alignment**: fill remaining `models`/`request_log`/cache fields + indexes.
-4. **Harden provider boundary**: richer error mapping and streaming behavior correctness.
-5. **Complete config precedence**: full `config.yaml` surface and runtime override wiring.
-6. **Raise quality bar**: broaden tests, lint/typecheck/release workflows, and docs.
+1. **Deepen health + ranking**: passive telemetry weighting, adaptive probes, cooldown policy.
+2. **Finalize schema alignment**: fill remaining `models`/`request_log`/cache fields + indexes.
+3. **Harden provider boundary**: richer error mapping and streaming behavior correctness.
+4. **Complete config precedence**: full `config.yaml` surface and runtime override wiring.
+5. **Raise quality bar**: broaden tests, lint/typecheck/release workflows, and docs.
 
 ## Pending changes note
 
