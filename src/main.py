@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import time
 
 from fastapi import FastAPI
 
@@ -32,6 +33,8 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = build_scheduler()
     app.state.ready = False
     app.state.force_discovery = False
+    app.state.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    app.state.job_status = {}
 
     discovered = await run_discovery(db, registry)
     db.writer.flush()
@@ -48,7 +51,7 @@ async def lifespan(app: FastAPI):
         ).fetchone()[0]
     app.state.ready = routable_count > 0
 
-    register_jobs(app.state.scheduler, db, registry)
+    register_jobs(app.state.scheduler, db, registry, app.state)
     app.state.scheduler.start()
     try:
         yield

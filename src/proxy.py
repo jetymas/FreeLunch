@@ -112,10 +112,56 @@ def build_router() -> APIRouter:
         _check_gateway_auth(request, authorization)
         db = request.app.state.db
         with db.read_conn() as conn:
+            model_stats = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) AS active,
+                    SUM(CASE WHEN is_healthy=1 THEN 1 ELSE 0 END) AS healthy,
+                    SUM(CASE WHEN is_active=1 AND is_healthy=1 THEN 1 ELSE 0 END) AS routable
+                FROM models
+                """
+            ).fetchone()
+            provider_stats = conn.execute(
+                """
+                SELECT provider_id,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN is_active=1 AND is_healthy=1 THEN 1 ELSE 0 END) AS routable
+                FROM models
+                GROUP BY provider_id
+                ORDER BY provider_id
+                """
+            ).fetchall()
             errors = conn.execute(
                 "SELECT id, last_error, consecutive_failures FROM models WHERE last_error IS NOT NULL ORDER BY last_failure_at DESC LIMIT 20"
             ).fetchall()
-        return {"errors": [{"model_id": e[0], "last_error": e[1], "consecutive_failures": e[2]} for e in errors]}
+
+        return {
+            "bootstrap": {
+                "started_at": request.app.state.started_at,
+                "ready": bool(request.app.state.ready),
+                "force_discovery": bool(request.app.state.force_discovery),
+            },
+            "db": {
+                "writer_queue_depth": db.writer.queue_depth(),
+            },
+            "models": {
+                "total": int(model_stats[0] or 0),
+                "active": int(model_stats[1] or 0),
+                "healthy": int(model_stats[2] or 0),
+                "routable": int(model_stats[3] or 0),
+                "providers": [
+                    {"provider_id": row[0], "total": int(row[1] or 0), "routable": int(row[2] or 0)}
+                    for row in provider_stats
+                ],
+            },
+            "scheduler": {
+                "jobs": request.app.state.job_status,
+            },
+            "recent_model_errors": [
+                {"model_id": e[0], "last_error": e[1], "consecutive_failures": e[2]} for e in errors
+            ],
+        }
 
     @router.post("/admin/refresh")
     async def admin_refresh(request: Request, authorization: str | None = Header(default=None)) -> dict:
