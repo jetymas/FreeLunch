@@ -153,7 +153,6 @@ It is intended to work cleanly with:
 - **OpenClaw**
 - **Open WebUI**
 - **Kilo Code**
-- **SillyTavern**
 - **curl / custom clients**
 
 In most cases, integration is just:
