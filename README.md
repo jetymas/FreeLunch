@@ -52,15 +52,15 @@ The initial shipping build is **OpenRouter-first**, with a provider-plugin archi
 
 ```mermaid
 flowchart LR
-    A[Clients\nOpenAI SDK / OpenClaw / Open WebUI / curl] --> B[FastAPI Proxy]
-    B --> C[Routing Engine]
-    C --> D[(SQLite)]
-    C --> E[Provider Registry]
-    E --> F[OpenRouter Adapter]
-    B --> G[Failover + Streaming Relay]
-    F --> H[OpenRouter API]
-    I[Discovery / Ranking / Health Jobs] --> D
-    I --> E
+    Clients["Clients<br/>OpenAI SDK / OpenClaw / Open WebUI / curl"] --> Proxy["FastAPI Proxy"]
+    Proxy --> Routing["Routing Engine"]
+    Routing --> DB[("SQLite")]
+    Routing --> Registry["Provider Registry"]
+    Registry --> OpenRouter["OpenRouter Adapter"]
+    Proxy --> Relay["Failover and Streaming Relay"]
+    OpenRouter --> API["OpenRouter API"]
+    Jobs["Discovery / Ranking / Health Jobs"] --> DB
+    Jobs --> Registry
 ```
 
 ### Core design rules
