@@ -166,8 +166,13 @@ def build_router() -> APIRouter:
     @router.post("/admin/refresh")
     async def admin_refresh(request: Request, authorization: str | None = Header(default=None)) -> dict:
         _check_gateway_auth(request, authorization)
+        discovery_runner = getattr(request.app.state, "discovery_runner", None)
+        if discovery_runner is None:
+            raise HTTPException(status_code=503, detail="discovery runner unavailable")
+
         request.app.state.force_discovery = True
-        return {"status": "queued"}
+        outcome = await discovery_runner()
+        return {"status": "completed", "outcome": outcome}
 
     @router.post("/v1/chat/completions")
     async def chat_completions(payload: dict, request: Request, authorization: str | None = Header(default=None)):

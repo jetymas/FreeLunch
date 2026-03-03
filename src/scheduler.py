@@ -11,6 +11,31 @@ from src.health import startup_health_pass
 from src.ranking import recompute_ranking
 
 
+async def run_discovery_pipeline(
+    db,
+    registry,
+    *,
+    health_probe_limit: int,
+    recompute_readiness: Callable[[], bool],
+) -> dict[str, int | bool]:
+    discovered = await run_discovery(db, registry)
+    db.writer.flush()
+
+    ranking_updates = recompute_ranking(db)
+    db.writer.flush()
+
+    probed_models = startup_health_pass(db, max_models=health_probe_limit)
+    db.writer.flush()
+
+    ready = recompute_readiness()
+    return {
+        "discovered": discovered,
+        "ranking_updates": ranking_updates,
+        "probed_models": probed_models,
+        "ready": ready,
+    }
+
+
 def build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     return scheduler
@@ -60,6 +85,22 @@ async def _track_job_async(
 
 
 def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
+    async def discovery_runner() -> dict[str, int | bool]:
+        async def _run() -> dict[str, int | bool]:
+            outcome = await run_discovery_pipeline(
+                db,
+                registry,
+                health_probe_limit=app_state.settings.startup_probe_limit,
+                recompute_readiness=app_state.recompute_readiness,
+            )
+            if app_state.force_discovery:
+                app_state.force_discovery = False
+            return outcome
+
+        return await _track_job_async(app_state.job_status, "discovery", _run)
+
+    app_state.discovery_runner = discovery_runner
+
     def rank_job() -> None:
         _track_job(
             app_state.job_status,
@@ -74,19 +115,6 @@ def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
             lambda: (startup_health_pass(db, max_models=3), db.writer.flush()),
         )
 
-    async def discovery_job() -> None:
-        async def _run() -> None:
-            await run_discovery(db, registry)
-            db.writer.flush()
-            if app_state.force_discovery:
-                app_state.force_discovery = False
-            recompute_ranking(db)
-            db.writer.flush()
-            startup_health_pass(db, max_models=3)
-            db.writer.flush()
-
-        await _track_job_async(app_state.job_status, "discovery", _run)
-
-    scheduler.add_job(discovery_job, IntervalTrigger(minutes=30), id="discovery", replace_existing=True)
+    scheduler.add_job(discovery_runner, IntervalTrigger(minutes=30), id="discovery", replace_existing=True)
     scheduler.add_job(rank_job, IntervalTrigger(minutes=15), id="ranking", replace_existing=True)
     scheduler.add_job(health_job, IntervalTrigger(minutes=20), id="health", replace_existing=True)
