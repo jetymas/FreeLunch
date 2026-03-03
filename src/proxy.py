@@ -1,131 +1,84 @@
 from __future__ import annotations
 
-from time import perf_counter
+import time
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Request
 
-from .providers.base import ProviderFatalError, ProviderRetryableError
-from .routing import NoRoutableModelError, list_candidate_models
-
-
-router = APIRouter()
+from src.routing import pick_model
 
 
-class ChatCompletionRequest(BaseModel):
-    model: str = "auto"
-    messages: list[dict] = Field(default_factory=list)
-    stream: bool = False
-    tools: list[dict] | None = None
+def build_router() -> APIRouter:
+    router = APIRouter()
 
+    @router.get("/healthz")
+    async def healthz() -> dict:
+        return {"status": "ok"}
 
-def require_gateway_key(request: Request) -> None:
-    app = request.app
-    configured = app.state.settings.gateway_api_key
-    if not configured:
-        return
-    auth = request.headers.get("authorization", "")
-    expected = f"Bearer {configured}"
-    if auth != expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
+    @router.get("/readyz")
+    async def readyz(request: Request) -> dict:
+        if not request.app.state.ready:
+            raise HTTPException(status_code=503, detail="not ready")
+        return {"status": "ready"}
 
+    @router.get("/v1/models")
+    async def list_models(request: Request) -> dict:
+        db = request.app.state.db
+        with db.read_conn() as conn:
+            rows = conn.execute(
+                "SELECT provider, model_name FROM models WHERE is_healthy=1 ORDER BY score DESC"
+            ).fetchall()
+        return {
+            "object": "list",
+            "data": [
+                {"id": model_name, "object": "model", "owned_by": provider}
+                for provider, model_name in rows
+            ],
+        }
 
-@router.get("/healthz")
-def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    @router.post("/v1/chat/completions")
+    async def chat_completions(payload: dict, request: Request) -> dict:
+        if not request.app.state.ready:
+            raise HTTPException(status_code=503, detail="gateway not ready")
 
+        db = request.app.state.db
+        registry = request.app.state.registry
 
-@router.get("/readyz")
-def readyz(request: Request) -> dict[str, str]:
-    if not request.app.state.ready:
-        raise HTTPException(status_code=503, detail="not ready")
-    return {"status": "ready"}
+        model = payload.get("model", "auto")
+        requires_tools = bool(payload.get("tools"))
 
-
-@router.get("/v1/models", dependencies=[Depends(require_gateway_key)])
-def list_models(request: Request) -> dict[str, list[dict[str, str]]]:
-    conn = request.app.state.db.connect()
-    try:
-        rows = conn.execute(
-            "SELECT provider, model_name FROM models WHERE is_healthy = 1 ORDER BY score DESC"
-        ).fetchall()
-    finally:
-        conn.close()
-    data = [{"id": row["model_name"], "object": "model", "owned_by": row["provider"]} for row in rows]
-    return {"object": "list", "data": data}
-
-
-@router.post("/v1/chat/completions", dependencies=[Depends(require_gateway_key)])
-def chat_completions(request: Request, body: ChatCompletionRequest):
-    if not request.app.state.ready:
-        raise HTTPException(status_code=503, detail="gateway not ready")
-
-    conn = request.app.state.db.connect()
-    started = perf_counter()
-    body_dict = body.model_dump(exclude_none=True)
-    try:
+        start = time.monotonic()
+        request_id = str(uuid.uuid4())
         try:
-            candidates = list_candidate_models(
-                conn,
-                body.model,
-                require_tools=bool(body.tools),
-                limit=request.app.state.settings.max_failover_attempts,
+            provider_name, model_name = pick_model(
+                db=db,
+                requested_model=model,
+                requires_tools=requires_tools,
             )
-        except NoRoutableModelError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            provider = registry.get(provider_name)
+            response = await provider.chat_completion(payload, model_name=model_name)
+            success = 1
+            error_type = None
+            return response
+        except Exception as exc:
+            success = 0
+            error_type = exc.__class__.__name__
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            db.writer.enqueue(
+                """
+                INSERT INTO request_log(request_id, provider, model_name, success, latency_ms, error_type)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    provider_name if 'provider_name' in locals() else None,
+                    model_name if 'model_name' in locals() else None,
+                    success,
+                    elapsed_ms,
+                    error_type,
+                ),
+            )
 
-        last_error = "unknown provider error"
-        for candidate in candidates:
-            provider = request.app.state.registry.get(candidate["provider"])
-            try:
-                result = provider.chat_completions(body_dict, candidate["model_name"])
-                latency_ms = int((perf_counter() - started) * 1000)
-                request.app.state.db.enqueue(
-                    """
-                    INSERT INTO request_log(provider, model_name, latency_ms, success, prompt_tokens, completion_tokens, total_tokens)
-                    VALUES (?, ?, ?, 1, ?, ?, ?)
-                    """,
-                    (
-                        candidate["provider"],
-                        candidate["model_name"],
-                        latency_ms,
-                        result.prompt_tokens,
-                        result.completion_tokens,
-                        result.total_tokens,
-                    ),
-                )
-                return result.payload
-            except ProviderRetryableError as exc:
-                last_error = str(exc)
-                request.app.state.db.enqueue(
-                    """
-                    INSERT INTO request_log(provider, model_name, latency_ms, success, error_type)
-                    VALUES (?, ?, ?, 0, ?)
-                    """,
-                    (
-                        candidate["provider"],
-                        candidate["model_name"],
-                        int((perf_counter() - started) * 1000),
-                        "retryable_provider_error",
-                    ),
-                )
-                continue
-            except ProviderFatalError as exc:
-                last_error = str(exc)
-                request.app.state.db.enqueue(
-                    """
-                    INSERT INTO request_log(provider, model_name, latency_ms, success, error_type)
-                    VALUES (?, ?, ?, 0, ?)
-                    """,
-                    (
-                        candidate["provider"],
-                        candidate["model_name"],
-                        int((perf_counter() - started) * 1000),
-                        "fatal_provider_error",
-                    ),
-                )
-                raise HTTPException(status_code=400, detail=last_error) from exc
-
-        raise HTTPException(status_code=503, detail=last_error)
-    finally:
-        conn.close()
+    return router

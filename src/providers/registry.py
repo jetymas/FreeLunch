@@ -1,28 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-
-from ..config import Settings
-from .openrouter import OpenRouterAdapter
+from src.providers.openrouter import OpenRouterAdapter
 
 
-@dataclass(slots=True)
 class ProviderRegistry:
-    settings: Settings
-    _providers: dict[str, Any] = field(init=False)
+    def __init__(self) -> None:
+        self._providers: dict[str, object] = {}
 
-    def __post_init__(self) -> None:
-        self._providers = {
-            "openrouter": OpenRouterAdapter(
-                api_key=self.settings.openrouter_api_key,
-                base_url=self.settings.openrouter_base_url,
-                timeout_s=self.settings.provider_timeout_s,
-            )
-        }
+    def register_openrouter(self, api_key: str) -> None:
+        self._providers["openrouter"] = OpenRouterAdapter(api_key=api_key)
 
-    def all(self):
-        return self._providers.values()
-
-    def get(self, name: str):
+    def get(self, name: str) -> object:
         return self._providers[name]
+
+    def all(self) -> list[object]:
+        return list(self._providers.values())

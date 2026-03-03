@@ -1,0 +1,7 @@
+app:
+  env: dev
+routing:
+  default_model: auto
+  require_tools_capability: true
+health:
+  startup_probe_limit: 3
