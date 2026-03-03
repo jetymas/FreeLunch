@@ -1,0 +1,11 @@
+services:
+  freelunch:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GATEWAY_API_KEY=${GATEWAY_API_KEY:-}
+      - DATABASE_URL=./data/freelunch.db
+    volumes:
+      - ./data:/app/data
