@@ -7,12 +7,9 @@ from fastapi import FastAPI
 
 from src.config import Settings
 from src.db import Database
-from src.discover import run_discovery
-from src.health import startup_health_pass
 from src.providers.registry import ProviderRegistry
 from src.proxy import build_router
-from src.ranking import recompute_ranking
-from src.scheduler import build_scheduler, register_jobs
+from src.scheduler import build_scheduler, register_jobs, run_discovery_pipeline
 
 
 @asynccontextmanager
@@ -36,20 +33,22 @@ async def lifespan(app: FastAPI):
     app.state.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     app.state.job_status = {}
 
-    discovered = await run_discovery(db, registry)
-    db.writer.flush()
+    def recompute_readiness() -> bool:
+        with db.read_conn() as conn:
+            routable_count = conn.execute(
+                "SELECT COUNT(*) FROM models WHERE is_healthy=1 AND is_active=1"
+            ).fetchone()[0]
+        app.state.ready = routable_count > 0
+        return app.state.ready
 
-    if discovered:
-        recompute_ranking(db)
-        db.writer.flush()
-        startup_health_pass(db, max_models=settings.startup_probe_limit)
-        db.writer.flush()
+    app.state.recompute_readiness = recompute_readiness
 
-    with db.read_conn() as conn:
-        routable_count = conn.execute(
-            "SELECT COUNT(*) FROM models WHERE is_healthy=1 AND is_active=1"
-        ).fetchone()[0]
-    app.state.ready = routable_count > 0
+    await run_discovery_pipeline(
+        db,
+        registry,
+        health_probe_limit=settings.startup_probe_limit,
+        recompute_readiness=recompute_readiness,
+    )
 
     register_jobs(app.state.scheduler, db, registry, app.state)
     app.state.scheduler.start()
