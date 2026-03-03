@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import time
 
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     app.state.force_discovery = False
     app.state.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     app.state.job_status = {}
+    app.state.discovery_lock = asyncio.Lock()
 
     def recompute_readiness() -> bool:
         with db.read_conn() as conn:

@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from src.db import utc_now_iso
 from src.health import mark_failure, mark_success
 from src.routing import RoutingRequirements, pick_candidates
 
@@ -56,6 +57,26 @@ def _to_sse(payload: dict) -> AsyncGenerator[bytes, None]:
     return gen()
 
 
+def _serialize_model_row(row: tuple) -> dict:
+    return {
+        "id": row[0],
+        "provider_id": row[1],
+        "provider_model_id": row[2],
+        "composite_score": row[3],
+        "is_healthy": bool(row[4]),
+        "is_active": bool(row[5]),
+        "supports_tools": bool(row[6]),
+        "supports_streaming": bool(row[7]),
+        "supports_vision": bool(row[8]),
+        "supports_structured_output": bool(row[9]),
+        "context_window": row[10],
+        "max_output_tokens": row[11],
+        "last_error": row[12],
+        "last_success_at": row[13],
+        "last_failure_at": row[14],
+    }
+
+
 def build_router() -> APIRouter:
     router = APIRouter()
 
@@ -91,21 +112,62 @@ def build_router() -> APIRouter:
         db = request.app.state.db
         with db.read_conn() as conn:
             rows = conn.execute(
-                "SELECT id, provider_id, provider_model_id, composite_score, is_healthy, is_active FROM models ORDER BY composite_score DESC"
+                """
+                SELECT id, provider_id, provider_model_id, composite_score, is_healthy, is_active,
+                       supports_tools, supports_streaming, supports_vision, supports_structured_output,
+                       context_window, max_output_tokens, last_error, last_success_at, last_failure_at
+                FROM models
+                ORDER BY composite_score DESC
+                """
             ).fetchall()
-        return {
-            "models": [
-                {
-                    "id": m[0],
-                    "provider_id": m[1],
-                    "provider_model_id": m[2],
-                    "composite_score": m[3],
-                    "is_healthy": bool(m[4]),
-                    "is_active": bool(m[5]),
-                }
-                for m in rows
-            ]
-        }
+        return {"models": [_serialize_model_row(m) for m in rows]}
+
+    @router.get("/admin/models/{model_id:path}")
+    async def admin_model_detail(model_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict:
+        _check_gateway_auth(request, authorization)
+        db = request.app.state.db
+        with db.read_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id, provider_id, provider_model_id, composite_score, is_healthy, is_active,
+                       supports_tools, supports_streaming, supports_vision, supports_structured_output,
+                       context_window, max_output_tokens, last_error, last_success_at, last_failure_at
+                FROM models
+                WHERE id=?
+                """,
+                (model_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="model not found")
+        return {"model": _serialize_model_row(row)}
+
+    @router.post("/admin/models/{model_id:path}/disable")
+    async def admin_disable_model(model_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict:
+        _check_gateway_auth(request, authorization)
+        db = request.app.state.db
+        with db.read_conn() as conn:
+            exists = conn.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="model not found")
+
+        db.writer.enqueue("UPDATE models SET is_active=0 WHERE id=?", (model_id,))
+        db.writer.flush()
+        request.app.state.recompute_readiness()
+        return {"status": "disabled", "model_id": model_id}
+
+    @router.post("/admin/models/{model_id:path}/enable")
+    async def admin_enable_model(model_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict:
+        _check_gateway_auth(request, authorization)
+        db = request.app.state.db
+        with db.read_conn() as conn:
+            exists = conn.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="model not found")
+
+        db.writer.enqueue("UPDATE models SET is_active=1 WHERE id=?", (model_id,))
+        db.writer.flush()
+        request.app.state.recompute_readiness()
+        return {"status": "enabled", "model_id": model_id}
 
     @router.get("/admin/health")
     async def admin_health(request: Request, authorization: str | None = Header(default=None)) -> dict:
@@ -170,9 +232,60 @@ def build_router() -> APIRouter:
         if discovery_runner is None:
             raise HTTPException(status_code=503, detail="discovery runner unavailable")
 
-        request.app.state.force_discovery = True
-        outcome = await discovery_runner()
+        async with request.app.state.discovery_lock:
+            request.app.state.force_discovery = True
+            outcome = await discovery_runner()
         return {"status": "completed", "outcome": outcome}
+
+    @router.get("/admin/logs")
+    async def admin_logs(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        limit: int = 50,
+        success_only: bool | None = None,
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        capped_limit = min(max(limit, 1), 500)
+
+        db = request.app.state.db
+        db.writer.flush()
+        where = []
+        params: list[object] = []
+        if success_only is not None:
+            where.append("success=?")
+            params.append(1 if success_only else 0)
+
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        query = (
+            "SELECT request_id, timestamp, selected_model_id, provider_id, attempt_index, was_fallback, "
+            "latency_ms, ttfb_ms, success, gateway_error_category, error_message, was_streaming, had_tools, had_vision "
+            f"FROM request_log {where_sql} ORDER BY timestamp DESC, id DESC LIMIT ?"
+        )
+        params.append(capped_limit)
+
+        with db.read_conn() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        logs = [
+            {
+                "request_id": row[0],
+                "timestamp": row[1],
+                "selected_model_id": row[2],
+                "provider_id": row[3],
+                "attempt_index": row[4],
+                "was_fallback": bool(row[5]),
+                "latency_ms": row[6],
+                "ttfb_ms": row[7],
+                "success": bool(row[8]),
+                "gateway_error_category": row[9],
+                "error_message": row[10],
+                "was_streaming": bool(row[11]),
+                "had_tools": bool(row[12]),
+                "had_vision": bool(row[13]),
+            }
+            for row in rows
+        ]
+        return {"logs": logs, "count": len(logs), "limit": capped_limit}
 
     @router.post("/v1/chat/completions")
     async def chat_completions(payload: dict, request: Request, authorization: str | None = Header(default=None)):
@@ -210,7 +323,7 @@ def build_router() -> APIRouter:
                     """,
                     (
                         request_id,
-                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        utc_now_iso(),
                         model_id,
                         provider_name,
                         req.requested_model,
@@ -241,7 +354,7 @@ def build_router() -> APIRouter:
                     """,
                     (
                         request_id,
-                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        utc_now_iso(),
                         model_id,
                         provider_name,
                         req.requested_model,
