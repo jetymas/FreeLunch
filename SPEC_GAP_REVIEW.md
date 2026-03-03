@@ -38,9 +38,10 @@ The codebase is now an **MVP-plus scaffold**: core request flow works end-to-end
 
 ### 4) Health/ranking strategy sophistication (high priority)
 
-- Health remains mostly simple and does not yet implement full passive-first + adaptive probe policy.
-- Ranking formula is still basic and does not fully combine benchmark cache + request telemetry weighting as specified.
-- Probe budgets/cooldown policy tuning and observability need deeper implementation.
+- ✅ Failure handling now applies adaptive exponential cooldown windows via `backoff_level`/`cooldown_until`, and success resets backoff state.
+- Remaining: full passive-first + adaptive active-probe policy still needs deeper implementation.
+- ✅ Ranking now blends benchmark signals with request telemetry (success rate, observed latency, and sample-size confidence) when recomputing `composite_score`.
+- Remaining: probe budgets/cooldown policy tuning and observability still need deeper implementation.
 
 ### 5) Config and override model completeness (medium priority)
 
@@ -64,3 +65,8 @@ The codebase is now an **MVP-plus scaffold**: core request flow works end-to-end
 ## Pending changes note
 
 This document has been refreshed to reflect implemented work from the recent admin-health observability PR and to re-baseline remaining gaps.
+
+
+## Blockers
+
+- `TASKS.md` is not present in the repository at this time, so explicit task-by-task completion tracking against that file is currently blocked.
