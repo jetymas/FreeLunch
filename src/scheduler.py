@@ -7,7 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from src.discover import run_discovery
-from src.health import startup_health_pass
+from src.health import bootstrap_health_check, run_health_checks
 from src.ranking import recompute_ranking
 
 
@@ -15,23 +15,23 @@ async def run_discovery_pipeline(
     db,
     registry,
     *,
-    health_probe_limit: int,
+    settings,
     recompute_readiness: Callable[[], bool],
 ) -> dict[str, int | bool]:
     discovered = await run_discovery(db, registry)
     db.writer.flush()
 
-    ranking_updates = recompute_ranking(db)
+    ranking_updates = recompute_ranking(db, settings=settings)
     db.writer.flush()
 
-    probed_models = startup_health_pass(db, max_models=health_probe_limit)
+    health_outcome = await bootstrap_health_check(db, registry, settings)
     db.writer.flush()
 
     ready = recompute_readiness()
     return {
         "discovered": discovered,
         "ranking_updates": ranking_updates,
-        "probed_models": probed_models,
+        "probed_models": health_outcome["probed"],
         "ready": ready,
     }
 
@@ -50,15 +50,19 @@ def _mark_job_start(job_status: dict[str, dict[str, object]], name: str) -> dict
 def _mark_job_success(entry: dict[str, object]) -> None:
     entry["last_success_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     entry["last_error"] = None
-    entry["run_count"] = int(entry.get("run_count", 0)) + 1
+    run_count = entry.get("run_count", 0)
+    entry["run_count"] = run_count + 1 if isinstance(run_count, int) else 1
 
 
 def _mark_job_failure(entry: dict[str, object], exc: Exception) -> None:
     entry["last_error"] = str(exc)[:500]
-    entry["run_count"] = int(entry.get("run_count", 0)) + 1
+    run_count = entry.get("run_count", 0)
+    entry["run_count"] = run_count + 1 if isinstance(run_count, int) else 1
 
 
-def _track_job(job_status: dict[str, dict[str, object]], name: str, fn: Callable[[], object]) -> object:
+def _track_job(
+    job_status: dict[str, dict[str, object]], name: str, fn: Callable[[], object]
+) -> object:
     entry = _mark_job_start(job_status, name)
     try:
         result = fn()
@@ -90,14 +94,15 @@ def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
             outcome = await run_discovery_pipeline(
                 db,
                 registry,
-                health_probe_limit=app_state.settings.startup_probe_limit,
+                settings=app_state.settings,
                 recompute_readiness=app_state.recompute_readiness,
             )
             if app_state.force_discovery:
                 app_state.force_discovery = False
             return outcome
 
-        return await _track_job_async(app_state.job_status, "discovery", _run)
+        result = await _track_job_async(app_state.job_status, "discovery", _run)
+        return result if isinstance(result, dict) else {}
 
     app_state.discovery_runner = discovery_runner
 
@@ -105,16 +110,38 @@ def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
         _track_job(
             app_state.job_status,
             "ranking",
-            lambda: (recompute_ranking(db), db.writer.flush()),
+            lambda: (recompute_ranking(db, settings=app_state.settings), db.writer.flush()),
         )
 
-    def health_job() -> None:
-        _track_job(
-            app_state.job_status,
-            "health",
-            lambda: (startup_health_pass(db, max_models=3), db.writer.flush()),
-        )
+    async def health_job() -> None:
+        async def _run() -> None:
+            await run_health_checks(db, registry, app_state.settings)
+            db.writer.flush()
+            app_state.recompute_readiness()
 
-    scheduler.add_job(discovery_runner, IntervalTrigger(minutes=30), id="discovery", replace_existing=True)
-    scheduler.add_job(rank_job, IntervalTrigger(minutes=15), id="ranking", replace_existing=True)
-    scheduler.add_job(health_job, IntervalTrigger(minutes=20), id="health", replace_existing=True)
+        await _track_job_async(app_state.job_status, "health", _run)
+
+    scheduler.add_job(
+        discovery_runner,
+        IntervalTrigger(minutes=30),
+        id="discovery",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        rank_job,
+        IntervalTrigger(minutes=15),
+        id="ranking",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        health_job,
+        IntervalTrigger(minutes=app_state.settings.health_probe_interval_minutes),
+        id="health",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )

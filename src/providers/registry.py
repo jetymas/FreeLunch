@@ -8,7 +8,9 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, ProviderAdapter] = {}
 
-    def register_openrouter(self, api_key: str, api_base: str = "https://openrouter.ai/api/v1") -> None:
+    def register_openrouter(
+        self, api_key: str, api_base: str = "https://openrouter.ai/api/v1"
+    ) -> None:
         self._providers["openrouter"] = OpenRouterAdapter(api_key=api_key, api_base=api_base)
 
     def get(self, name: str) -> ProviderAdapter:

@@ -1,7 +1,36 @@
 app:
   env: dev
+
+providers:
+  openrouter:
+    api_base: "https://openrouter.ai/api/v1"
+    active_probe_enabled: true
+
 routing:
   default_model: auto
-  require_tools_capability: true
+  max_attempts: 3
+
+ranking:
+  fallback_model: "openrouter/openrouter/free"
+  weights:
+    benchmark_score: 0.30
+    real_world_usage: 0.15
+    latency: 0.20
+    availability: 0.20
+    context_window: 0.10
+    feature_support: 0.05
+
 health:
-  startup_probe_limit: 3
+  probe_interval_minutes: 180
+  probe_timeout_seconds: 15
+  probe_concurrency: 1
+  max_probes_per_run: 1
+  stale_after_minutes: 360
+  top_n_stale_probe: 3
+  startup_probe_limit: 2
+  consecutive_failures_threshold: 3
+  cooldown_minutes: 30
+  max_backoff_exponent: 4
+  probe_max_tokens: 1
+  daily_request_budget_by_provider:
+    openrouter: 5

@@ -5,105 +5,158 @@ import queue
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+DB_SCHEMA_VERSION = 3
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-SCHEMA_SQL = """
+CREATE_SCHEMA_MIGRATIONS_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
-    version TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS models (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    provider_id TEXT NOT NULL,
-    endpoint_id TEXT DEFAULT NULL,
-    provider_model_id TEXT NOT NULL,
-    provider_base_url TEXT NOT NULL,
-    provider_api_key_env TEXT NOT NULL,
-    provider_options_json TEXT DEFAULT NULL,
-    context_window INTEGER DEFAULT 4096,
-    max_output_tokens INTEGER DEFAULT NULL,
-    tokenizer_family TEXT DEFAULT NULL,
-    supports_tools INTEGER DEFAULT 0,
-    supports_streaming INTEGER DEFAULT 1,
-    supports_vision INTEGER DEFAULT 0,
-    supports_structured_output INTEGER DEFAULT 0,
-    supports_system_messages INTEGER DEFAULT 1,
-    chatbot_arena_elo REAL DEFAULT NULL,
-    open_llm_score REAL DEFAULT NULL,
-    openrouter_rank INTEGER DEFAULT NULL,
-    is_healthy INTEGER DEFAULT 1,
-    last_health_check TEXT DEFAULT NULL,
-    avg_latency_ms REAL DEFAULT NULL,
-    avg_ttfb_ms REAL DEFAULT NULL,
-    consecutive_failures INTEGER DEFAULT 0,
-    backoff_level INTEGER DEFAULT 0,
-    cooldown_until TEXT DEFAULT NULL,
-    last_error TEXT DEFAULT NULL,
-    last_probe_at TEXT DEFAULT NULL,
-    last_success_at TEXT DEFAULT NULL,
-    last_failure_at TEXT DEFAULT NULL,
-    last_routed_at TEXT DEFAULT NULL,
-    composite_score REAL DEFAULT 0.0,
-    score_updated_at TEXT DEFAULT NULL,
-    discovered_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    is_active INTEGER DEFAULT 1
-);
-
-CREATE INDEX IF NOT EXISTS idx_models_routing
-    ON models (is_active, is_healthy, cooldown_until, composite_score DESC);
-CREATE INDEX IF NOT EXISTS idx_models_provider_active
-    ON models (provider_id, is_active, last_seen_at DESC);
-
-CREATE TABLE IF NOT EXISTS request_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_id TEXT DEFAULT NULL,
-    timestamp TEXT NOT NULL,
-    request_source TEXT NOT NULL DEFAULT 'client',
-    selected_model_id TEXT NOT NULL,
-    provider_id TEXT NOT NULL,
-    client_requested_model TEXT DEFAULT NULL,
-    attempt_index INTEGER DEFAULT 0,
-    was_fallback INTEGER DEFAULT 0,
-    prompt_tokens INTEGER DEFAULT NULL,
-    completion_tokens INTEGER DEFAULT NULL,
-    total_tokens INTEGER DEFAULT NULL,
-    latency_ms REAL DEFAULT NULL,
-    ttfb_ms REAL DEFAULT NULL,
-    success INTEGER DEFAULT 1,
-    gateway_error_category TEXT DEFAULT NULL,
-    error_code TEXT DEFAULT NULL,
-    error_message TEXT DEFAULT NULL,
-    was_streaming INTEGER DEFAULT 0,
-    had_tools INTEGER DEFAULT 0,
-    had_vision INTEGER DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_request_log_timestamp ON request_log (timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_request_log_model ON request_log (selected_model_id);
-CREATE INDEX IF NOT EXISTS idx_request_log_provider_day ON request_log (provider_id, request_source, timestamp DESC);
-
-CREATE TABLE IF NOT EXISTS leaderboard_cache (
-    model_name_normalized TEXT PRIMARY KEY,
-    chatbot_arena_elo REAL DEFAULT NULL,
-    open_llm_avg_score REAL DEFAULT NULL,
-    fetched_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS config_overrides (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
 );
 """
+
+
+def _create_base_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS models (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            endpoint_id TEXT DEFAULT NULL,
+            provider_model_id TEXT NOT NULL,
+            provider_base_url TEXT NOT NULL,
+            provider_api_key_env TEXT NOT NULL,
+            provider_options_json TEXT DEFAULT NULL,
+            context_window INTEGER DEFAULT 4096,
+            max_output_tokens INTEGER DEFAULT NULL,
+            tokenizer_family TEXT DEFAULT NULL,
+            supports_tools INTEGER DEFAULT 0,
+            supports_streaming INTEGER DEFAULT 1,
+            supports_vision INTEGER DEFAULT 0,
+            supports_structured_output INTEGER DEFAULT 0,
+            supports_system_messages INTEGER DEFAULT 1,
+            chatbot_arena_elo REAL DEFAULT NULL,
+            open_llm_score REAL DEFAULT NULL,
+            openrouter_rank INTEGER DEFAULT NULL,
+            is_healthy INTEGER DEFAULT 1,
+            last_health_check TEXT DEFAULT NULL,
+            avg_latency_ms REAL DEFAULT NULL,
+            avg_ttfb_ms REAL DEFAULT NULL,
+            consecutive_failures INTEGER DEFAULT 0,
+            backoff_level INTEGER DEFAULT 0,
+            cooldown_until TEXT DEFAULT NULL,
+            last_error TEXT DEFAULT NULL,
+            last_probe_at TEXT DEFAULT NULL,
+            last_success_at TEXT DEFAULT NULL,
+            last_failure_at TEXT DEFAULT NULL,
+            last_routed_at TEXT DEFAULT NULL,
+            composite_score REAL DEFAULT 0.0,
+            score_updated_at TEXT DEFAULT NULL,
+            discovered_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS request_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT DEFAULT NULL,
+            timestamp TEXT NOT NULL,
+            request_source TEXT NOT NULL DEFAULT 'client',
+            selected_model_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            client_requested_model TEXT DEFAULT NULL,
+            attempt_index INTEGER DEFAULT 0,
+            was_fallback INTEGER DEFAULT 0,
+            prompt_tokens INTEGER DEFAULT NULL,
+            completion_tokens INTEGER DEFAULT NULL,
+            total_tokens INTEGER DEFAULT NULL,
+            latency_ms REAL DEFAULT NULL,
+            ttfb_ms REAL DEFAULT NULL,
+            success INTEGER DEFAULT 1,
+            gateway_error_category TEXT DEFAULT NULL,
+            error_code TEXT DEFAULT NULL,
+            error_message TEXT DEFAULT NULL,
+            was_streaming INTEGER DEFAULT 0,
+            had_tools INTEGER DEFAULT 0,
+            had_vision INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS leaderboard_cache (
+            model_name_normalized TEXT PRIMARY KEY,
+            chatbot_arena_elo REAL DEFAULT NULL,
+            open_llm_avg_score REAL DEFAULT NULL,
+            fetched_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS config_overrides (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+
+def migrate_to_v1(conn: sqlite3.Connection) -> None:
+    _create_base_schema(conn)
+
+
+def migrate_to_v2(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        DROP INDEX IF EXISTS idx_models_routing;
+        DROP INDEX IF EXISTS idx_models_provider_active;
+        DROP INDEX IF EXISTS idx_request_log_timestamp;
+        DROP INDEX IF EXISTS idx_request_log_model;
+        DROP INDEX IF EXISTS idx_request_log_provider_day;
+
+        CREATE INDEX IF NOT EXISTS idx_models_routing
+            ON models (is_active, is_healthy, cooldown_until, composite_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_models_provider_active
+            ON models (provider_id, is_active, last_seen_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_request_log_timestamp
+            ON request_log (timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_request_log_model
+            ON request_log (selected_model_id);
+        CREATE INDEX IF NOT EXISTS idx_request_log_provider_day
+            ON request_log (provider_id, request_source, timestamp DESC);
+        """
+    )
+
+
+def migrate_to_v3(conn: sqlite3.Connection) -> None:
+    # Ensure override/cache timestamps are canonical UTC Z timestamps rather than SQLite CURRENT_TIMESTAMP format.
+    conn.execute(
+        """
+        UPDATE config_overrides
+        SET updated_at = REPLACE(updated_at, ' ', 'T') || 'Z'
+        WHERE updated_at GLOB '????-??-?? ??:??:??'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE leaderboard_cache
+        SET fetched_at = REPLACE(fetched_at, ' ', 'T') || 'Z'
+        WHERE fetched_at GLOB '????-??-?? ??:??:??'
+        """
+    )
+
+
+MIGRATIONS: list[tuple[int, Any]] = [
+    (1, migrate_to_v1),
+    (2, migrate_to_v2),
+    (3, migrate_to_v3),
+]
 
 
 @dataclass(slots=True)
@@ -163,20 +216,138 @@ class Database:
 
     def init(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
-            conn.executescript(SCHEMA_SQL)
-            conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)", ("v2_spec_schema",))
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            conn.execute("BEGIN")
+            conn.execute(CREATE_SCHEMA_MIGRATIONS_SQL)
+            applied_versions = {
+                int(row[0])
+                for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+            }
+            for version, migrate in MIGRATIONS:
+                if version in applied_versions:
+                    continue
+                migrate(conn)
+                conn.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (version, utc_now_iso()),
+                )
             conn.commit()
 
     def read_conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def get_overrides(self) -> dict[str, Any]:
         with self.read_conn() as conn:
             rows = conn.execute("SELECT key, value FROM config_overrides").fetchall()
         out: dict[str, Any] = {}
-        for key, value in rows:
+        for row in rows:
             try:
-                out[key] = json.loads(value)
+                out[str(row["key"])] = json.loads(row["value"])
             except json.JSONDecodeError:
-                out[key] = value
+                out[str(row["key"])] = row["value"]
         return out
+
+    def list_overrides(self) -> list[sqlite3.Row]:
+        with self.read_conn() as conn:
+            return conn.execute(
+                "SELECT key, value, updated_at FROM config_overrides ORDER BY key"
+            ).fetchall()
+
+    def set_override(self, key: str, value: Any) -> None:
+        serialized = value if isinstance(value, str) else json.dumps(value)
+        self.writer.enqueue(
+            """
+            INSERT INTO config_overrides(key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (key, serialized, utc_now_iso()),
+        )
+
+    def delete_override(self, key: str) -> None:
+        self.writer.enqueue("DELETE FROM config_overrides WHERE key=?", (key,))
+
+    def set_model_active(self, model_id: str, *, is_active: bool) -> None:
+        self.writer.enqueue(
+            "UPDATE models SET is_active=? WHERE id=?",
+            (1 if is_active else 0, model_id),
+        )
+
+    def log_request(self, entry: dict[str, Any]) -> None:
+        self.writer.enqueue(
+            """
+            INSERT INTO request_log(
+                request_id, timestamp, request_source, selected_model_id, provider_id,
+                client_requested_model, attempt_index, was_fallback, prompt_tokens,
+                completion_tokens, total_tokens, latency_ms, ttfb_ms, success,
+                gateway_error_category, error_code, error_message, was_streaming, had_tools, had_vision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.get("request_id"),
+                entry.get("timestamp", utc_now_iso()),
+                entry.get("request_source", "client"),
+                entry["selected_model_id"],
+                entry["provider_id"],
+                entry.get("client_requested_model"),
+                int(entry.get("attempt_index", 0) or 0),
+                1 if entry.get("was_fallback") else 0,
+                entry.get("prompt_tokens"),
+                entry.get("completion_tokens"),
+                entry.get("total_tokens"),
+                entry.get("latency_ms"),
+                entry.get("ttfb_ms"),
+                1 if entry.get("success", True) else 0,
+                entry.get("gateway_error_category"),
+                entry.get("error_code"),
+                entry.get("error_message"),
+                1 if entry.get("was_streaming") else 0,
+                1 if entry.get("had_tools") else 0,
+                1 if entry.get("had_vision") else 0,
+            ),
+        )
+
+    def upsert_leaderboard_cache(
+        self,
+        model_name_normalized: str,
+        *,
+        chatbot_arena_elo: float | None,
+        open_llm_avg_score: float | None,
+    ) -> None:
+        self.writer.enqueue(
+            """
+            INSERT INTO leaderboard_cache(
+                model_name_normalized, chatbot_arena_elo, open_llm_avg_score, fetched_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(model_name_normalized) DO UPDATE SET
+                chatbot_arena_elo=excluded.chatbot_arena_elo,
+                open_llm_avg_score=excluded.open_llm_avg_score,
+                fetched_at=excluded.fetched_at
+            """,
+            (model_name_normalized, chatbot_arena_elo, open_llm_avg_score, utc_now_iso()),
+        )
+
+    def get_leaderboard_cache(
+        self, model_name_normalized: str, *, max_age_hours: int = 24
+    ) -> sqlite3.Row | None:
+        cutoff = (
+            (datetime.now(timezone.utc) - timedelta(hours=max_age_hours))
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        with self.read_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT model_name_normalized, chatbot_arena_elo, open_llm_avg_score, fetched_at
+                FROM leaderboard_cache
+                WHERE model_name_normalized=? AND fetched_at >= ?
+                """,
+                (model_name_normalized, cutoff),
+            ).fetchone()
+        return cast(sqlite3.Row | None, row)

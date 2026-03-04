@@ -10,7 +10,13 @@ from fastapi.responses import StreamingResponse
 
 from src.db import utc_now_iso
 from src.health import mark_failure, mark_success
-from src.routing import RoutingRequirements, pick_candidates
+from src.providers.base import ProviderError, ProviderRetryableError, StreamResult
+from src.routing import (
+    NoHealthyModelsError,
+    RoutingPreferences,
+    RoutingRequirements,
+    pick_candidates,
+)
 
 
 def _check_gateway_auth(request: Request, authorization: str | None) -> None:
@@ -41,20 +47,22 @@ def _parse_requirements(payload: dict) -> RoutingRequirements:
     )
 
 
-def _to_sse(payload: dict) -> AsyncGenerator[bytes, None]:
-    async def gen() -> AsyncGenerator[bytes, None]:
-        choice = payload.get("choices", [{}])[0]
-        content = choice.get("message", {}).get("content", "")
-        chunk = {
-            "id": payload.get("id", "chatcmpl-stream"),
-            "object": "chat.completion.chunk",
-            "model": payload.get("model"),
-            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": "stop"}],
-        }
-        yield f"data: {json.dumps(chunk)}\n\n".encode()
-        yield b"data: [DONE]\n\n"
+def _parse_routing_preferences(request: Request) -> RoutingPreferences | None:
+    settings = request.app.state.settings
+    if not settings.routing_enable_request_preference_headers:
+        return None
 
-    return gen()
+    preference = request.headers.get("X-Gateway-Preference", "balanced").strip().lower()
+    if preference not in {"balanced", "quality", "latency", "context", "reliability"}:
+        preference = "balanced"
+
+    max_latency_ms = request.headers.get("X-Gateway-Max-Latency-Ms")
+    min_context = request.headers.get("X-Gateway-Min-Context")
+    return RoutingPreferences(
+        preference=preference,
+        max_latency_ms=int(max_latency_ms) if max_latency_ms and max_latency_ms.isdigit() else None,
+        min_context_tokens=int(min_context) if min_context and min_context.isdigit() else None,
+    )
 
 
 def _serialize_model_row(row: tuple) -> dict:
@@ -75,6 +83,205 @@ def _serialize_model_row(row: tuple) -> dict:
         "last_success_at": row[13],
         "last_failure_at": row[14],
     }
+
+
+def _provider_error_status(exc: ProviderError) -> int:
+    if exc.category == "AUTH_ERROR":
+        return exc.status_code or 401
+    if exc.category in {"INVALID_REQUEST", "CONTEXT_EXCEEDED"}:
+        return 400
+    if exc.category == "RATE_LIMITED":
+        return 429
+    return 502
+
+
+def _log_failure(
+    db,
+    *,
+    request_id: str,
+    model_id: str,
+    provider_name: str,
+    requested_model: str | None,
+    attempt_index: int,
+    latency_ms: int,
+    provider_error: ProviderError,
+    requires_streaming: bool,
+    requires_tools: bool,
+    requires_vision: bool,
+) -> None:
+    db.log_request(
+        {
+            "request_id": request_id,
+            "timestamp": utc_now_iso(),
+            "request_source": "client",
+            "selected_model_id": model_id,
+            "provider_id": provider_name,
+            "client_requested_model": requested_model,
+            "attempt_index": attempt_index,
+            "was_fallback": attempt_index > 0,
+            "latency_ms": latency_ms,
+            "success": False,
+            "gateway_error_category": provider_error.category,
+            "error_code": provider_error.error_code,
+            "error_message": str(provider_error)[:500],
+            "was_streaming": requires_streaming,
+            "had_tools": requires_tools,
+            "had_vision": requires_vision,
+        }
+    )
+
+
+def _parse_stream_event(raw_event: bytes) -> tuple[dict | None, bool]:
+    for line in raw_event.decode("utf-8", errors="ignore").splitlines():
+        if not line.startswith("data: "):
+            continue
+        data = line[6:].strip()
+        if data == "[DONE]":
+            return None, True
+        try:
+            return json.loads(data), False
+        except json.JSONDecodeError:
+            return None, False
+    return None, False
+
+
+def _is_comment_event(raw_event: bytes) -> bool:
+    lines = [line.strip() for line in raw_event.decode("utf-8", errors="ignore").splitlines() if line.strip()]
+    return bool(lines) and all(line.startswith(":") for line in lines)
+
+
+def _provider_error_from_event(event: dict) -> ProviderError | None:
+    error = event.get("error")
+    if not isinstance(error, dict):
+        return None
+
+    message = str(error.get("message") or "provider stream error")[:500]
+    code = error.get("code")
+    status_code = error.get("status_code")
+    if code is not None:
+        code = str(code)
+    if status_code == 429:
+        return ProviderRetryableError(
+            message,
+            category="RATE_LIMITED",
+            status_code=status_code,
+            error_code=code,
+        )
+    if status_code in {400, 403, 404}:
+        return ProviderError(
+            message,
+            category="INVALID_REQUEST",
+            retryable=False,
+            status_code=status_code,
+            error_code=code,
+        )
+    if status_code in {401, 402}:
+        return ProviderError(
+            message,
+            category="AUTH_ERROR",
+            retryable=False,
+            status_code=status_code,
+            error_code=code,
+        )
+    return ProviderRetryableError(
+        message,
+        category="PROVIDER_UNAVAILABLE",
+        status_code=status_code,
+        error_code=code,
+    )
+
+
+async def _relay_stream(
+    request: Request,
+    db,
+    req: RoutingRequirements,
+    request_id: str,
+    model_id: str,
+    provider_name: str,
+    attempt_index: int,
+    first_event: bytes,
+    stream_result: StreamResult,
+    start: float,
+) -> AsyncGenerator[bytes, None]:
+    done_seen = False
+    prompt_tokens = None
+    completion_tokens = None
+    total_tokens = None
+    stream_error: ProviderError | None = None
+    ttfb_ms = int((time.monotonic() - start) * 1000)
+    first_payload, done_seen = _parse_stream_event(first_event)
+    if first_payload and isinstance(first_payload.get("usage"), dict):
+        usage = first_payload["usage"]
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_tokens = usage.get("total_tokens")
+    if first_payload:
+        stream_error = _provider_error_from_event(first_payload)
+
+    try:
+        if not await request.is_disconnected():
+            yield first_event
+
+        async for raw_event in stream_result.events:
+            if await request.is_disconnected():
+                break
+            payload, event_is_done = _parse_stream_event(raw_event)
+            done_seen = done_seen or event_is_done
+            if payload and isinstance(payload.get("usage"), dict):
+                usage = payload["usage"]
+                prompt_tokens = usage.get("prompt_tokens")
+                completion_tokens = usage.get("completion_tokens")
+                total_tokens = usage.get("total_tokens")
+            if payload:
+                parsed_error = _provider_error_from_event(payload)
+                if parsed_error is not None:
+                    stream_error = parsed_error
+            yield raw_event
+    except ProviderError as exc:
+        stream_error = exc
+    finally:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if stream_error is None and not await request.is_disconnected():
+            if not done_seen:
+                yield b"data: [DONE]\n\n"
+            mark_success(db, model_id, latency_ms=latency_ms, ttfb_ms=ttfb_ms)
+            db.log_request(
+                {
+                    "request_id": request_id,
+                    "timestamp": utc_now_iso(),
+                    "request_source": "client",
+                    "selected_model_id": model_id,
+                    "provider_id": provider_name,
+                    "client_requested_model": req.requested_model,
+                    "attempt_index": attempt_index,
+                    "was_fallback": attempt_index > 0,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "latency_ms": latency_ms,
+                    "ttfb_ms": ttfb_ms,
+                    "success": True,
+                    "was_streaming": True,
+                    "had_tools": req.requires_tools,
+                    "had_vision": req.requires_vision,
+                }
+            )
+        elif stream_error is not None:
+            if stream_error.retryable:
+                mark_failure(db, model_id, str(stream_error), settings=request.app.state.settings)
+            _log_failure(
+                db,
+                request_id=request_id,
+                model_id=model_id,
+                provider_name=provider_name,
+                requested_model=req.requested_model,
+                attempt_index=attempt_index,
+                latency_ms=latency_ms,
+                provider_error=stream_error,
+                requires_streaming=True,
+                requires_tools=req.requires_tools,
+                requires_vision=req.requires_vision,
+            )
 
 
 def build_router() -> APIRouter:
@@ -150,7 +357,7 @@ def build_router() -> APIRouter:
         if not exists:
             raise HTTPException(status_code=404, detail="model not found")
 
-        db.writer.enqueue("UPDATE models SET is_active=0 WHERE id=?", (model_id,))
+        db.set_model_active(model_id, is_active=False)
         db.writer.flush()
         request.app.state.recompute_readiness()
         return {"status": "disabled", "model_id": model_id}
@@ -164,7 +371,7 @@ def build_router() -> APIRouter:
         if not exists:
             raise HTTPException(status_code=404, detail="model not found")
 
-        db.writer.enqueue("UPDATE models SET is_active=1 WHERE id=?", (model_id,))
+        db.set_model_active(model_id, is_active=True)
         db.writer.flush()
         request.app.state.recompute_readiness()
         return {"status": "enabled", "model_id": model_id}
@@ -225,6 +432,60 @@ def build_router() -> APIRouter:
             ],
         }
 
+    @router.get("/admin/config")
+    async def admin_config(request: Request, authorization: str | None = Header(default=None)) -> dict:
+        _check_gateway_auth(request, authorization)
+        db = request.app.state.db
+        overrides = [
+            {"key": row["key"], "value": row["value"], "updated_at": row["updated_at"]}
+            for row in db.list_overrides()
+        ]
+        return {
+            "overrides": overrides,
+            "effective": request.app.state.settings.public_settings(),
+        }
+
+    @router.put("/admin/config/{key:path}")
+    async def admin_set_config(
+        key: str,
+        payload: dict,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        if "value" not in payload:
+            raise HTTPException(status_code=400, detail="missing value")
+        if not request.app.state.settings.is_overridable(key):
+            raise HTTPException(status_code=400, detail="override key not allowed")
+
+        db = request.app.state.db
+        db.set_override(key, payload["value"])
+        db.writer.flush()
+        request.app.state.reload_settings()
+        return {
+            "status": "updated",
+            "key": key,
+            "value": payload["value"],
+            "effective": request.app.state.settings.public_settings(),
+        }
+
+    @router.delete("/admin/config/{key:path}")
+    async def admin_delete_config(
+        key: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        db = request.app.state.db
+        db.delete_override(key)
+        db.writer.flush()
+        request.app.state.reload_settings()
+        return {
+            "status": "deleted",
+            "key": key,
+            "effective": request.app.state.settings.public_settings(),
+        }
+
     @router.post("/admin/refresh")
     async def admin_refresh(request: Request, authorization: str | None = Header(default=None)) -> dict:
         _check_gateway_auth(request, authorization)
@@ -233,6 +494,7 @@ def build_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="discovery runner unavailable")
 
         async with request.app.state.discovery_lock:
+            request.app.state.reload_settings()
             request.app.state.force_discovery = True
             outcome = await discovery_runner()
         return {"status": "completed", "outcome": outcome}
@@ -258,7 +520,8 @@ def build_router() -> APIRouter:
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         query = (
             "SELECT request_id, timestamp, selected_model_id, provider_id, attempt_index, was_fallback, "
-            "latency_ms, ttfb_ms, success, gateway_error_category, error_message, was_streaming, had_tools, had_vision "
+            "latency_ms, ttfb_ms, success, gateway_error_category, error_code, error_message, "
+            "was_streaming, had_tools, had_vision "
             f"FROM request_log {where_sql} ORDER BY timestamp DESC, id DESC LIMIT ?"
         )
         params.append(capped_limit)
@@ -278,10 +541,11 @@ def build_router() -> APIRouter:
                 "ttfb_ms": row[7],
                 "success": bool(row[8]),
                 "gateway_error_category": row[9],
-                "error_message": row[10],
-                "was_streaming": bool(row[11]),
-                "had_tools": bool(row[12]),
-                "had_vision": bool(row[13]),
+                "error_code": row[10],
+                "error_message": row[11],
+                "was_streaming": bool(row[12]),
+                "had_tools": bool(row[13]),
+                "had_vision": bool(row[14]),
             }
             for row in rows
         ]
@@ -297,77 +561,135 @@ def build_router() -> APIRouter:
         settings = request.app.state.settings
 
         req = _parse_requirements(payload)
-        candidates = pick_candidates(db, req, limit=settings.routing_max_attempts)
-        if not candidates:
-            raise HTTPException(status_code=503, detail="No routable healthy model found", headers={"Retry-After": "10"})
+        preferences = _parse_routing_preferences(request)
+        try:
+            candidates = pick_candidates(
+                db,
+                req,
+                preferences=preferences,
+                fallback_model_id=settings.ranking_fallback_model,
+                limit=settings.routing_max_attempts,
+            )
+        except NoHealthyModelsError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="No routable healthy model found",
+                headers={"Retry-After": "10"},
+            ) from exc
 
         start = time.monotonic()
         request_id = str(uuid.uuid4())
-        last_error: Exception | None = None
+        last_provider_error: ProviderError | None = None
 
         for idx, candidate in enumerate(candidates):
             model_id = candidate["id"]
             provider_name = candidate["provider_id"]
             model_name = candidate["provider_model_id"]
+            provider = registry.get(provider_name)
             try:
-                provider = registry.get(provider_name)
-                result = await provider.chat_completions(payload, model=model_name)
-                mark_success(db, model_id)
-                db.writer.enqueue(
-                    """
-                    INSERT INTO request_log(request_id, timestamp, request_source, selected_model_id, provider_id,
-                                            client_requested_model, attempt_index, was_fallback, prompt_tokens,
-                                            completion_tokens, total_tokens, latency_ms, ttfb_ms, success,
-                                            was_streaming, had_tools, had_vision)
-                    VALUES (?, ?, 'client', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                    """,
-                    (
-                        request_id,
-                        utc_now_iso(),
-                        model_id,
-                        provider_name,
-                        req.requested_model,
-                        idx,
-                        1 if idx > 0 else 0,
-                        result.prompt_tokens,
-                        result.completion_tokens,
-                        result.total_tokens,
-                        int((time.monotonic() - start) * 1000),
-                        result.ttfb_ms,
-                        1 if req.requires_streaming else 0,
-                        1 if req.requires_tools else 0,
-                        1 if req.requires_vision else 0,
-                    ),
-                )
                 if req.requires_streaming:
-                    return StreamingResponse(_to_sse(result.payload), media_type="text/event-stream")
+                    stream_result = await provider.stream_chat_completions(payload, model=model_name)
+                    first_event = await anext(stream_result.events)
+                    while _is_comment_event(first_event):
+                        first_event = await anext(stream_result.events)
+                    return StreamingResponse(
+                        _relay_stream(
+                            request,
+                            db,
+                            req,
+                            request_id,
+                            model_id,
+                            provider_name,
+                            idx,
+                            first_event,
+                            stream_result,
+                            start,
+                        ),
+                        media_type="text/event-stream",
+                    )
+
+                result = await provider.chat_completions(payload, model=model_name)
+                mark_success(db, model_id, latency_ms=result.latency_ms, ttfb_ms=result.ttfb_ms)
+                db.log_request(
+                    {
+                        "request_id": request_id,
+                        "timestamp": utc_now_iso(),
+                        "request_source": "client",
+                        "selected_model_id": model_id,
+                        "provider_id": provider_name,
+                        "client_requested_model": req.requested_model,
+                        "attempt_index": idx,
+                        "was_fallback": idx > 0,
+                        "prompt_tokens": result.prompt_tokens,
+                        "completion_tokens": result.completion_tokens,
+                        "total_tokens": result.total_tokens,
+                        "latency_ms": int((time.monotonic() - start) * 1000),
+                        "ttfb_ms": result.ttfb_ms,
+                        "success": True,
+                        "was_streaming": req.requires_streaming,
+                        "had_tools": req.requires_tools,
+                        "had_vision": req.requires_vision,
+                    }
+                )
                 return result.payload
+            except StopAsyncIteration:
+                last_provider_error = ProviderRetryableError(
+                    "provider stream ended before first event",
+                    category="PROVIDER_UNAVAILABLE",
+                )
+            except ProviderError as exc:
+                last_provider_error = exc
+                if exc.retryable:
+                    mark_failure(db, model_id, str(exc), settings=settings)
+                    _log_failure(
+                        db,
+                        request_id=request_id,
+                        model_id=model_id,
+                        provider_name=provider_name,
+                        requested_model=req.requested_model,
+                        attempt_index=idx,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        provider_error=exc,
+                        requires_streaming=req.requires_streaming,
+                        requires_tools=req.requires_tools,
+                        requires_vision=req.requires_vision,
+                    )
+                    continue
+
+                _log_failure(
+                    db,
+                    request_id=request_id,
+                    model_id=model_id,
+                    provider_name=provider_name,
+                    requested_model=req.requested_model,
+                    attempt_index=idx,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    provider_error=exc,
+                    requires_streaming=req.requires_streaming,
+                    requires_tools=req.requires_tools,
+                    requires_vision=req.requires_vision,
+                )
+                raise HTTPException(status_code=_provider_error_status(exc), detail=str(exc)) from exc
             except Exception as exc:
-                last_error = exc
-                mark_failure(db, model_id, str(exc))
-                db.writer.enqueue(
-                    """
-                    INSERT INTO request_log(request_id, timestamp, request_source, selected_model_id, provider_id,
-                                            client_requested_model, attempt_index, was_fallback, latency_ms,
-                                            success, gateway_error_category, error_message, was_streaming, had_tools, had_vision)
-                    VALUES (?, ?, 'client', ?, ?, ?, ?, ?, ?, 0, 'provider_error', ?, ?, ?, ?)
-                    """,
-                    (
-                        request_id,
-                        utc_now_iso(),
-                        model_id,
-                        provider_name,
-                        req.requested_model,
-                        idx,
-                        1 if idx > 0 else 0,
-                        int((time.monotonic() - start) * 1000),
-                        str(exc)[:500],
-                        1 if req.requires_streaming else 0,
-                        1 if req.requires_tools else 0,
-                        1 if req.requires_vision else 0,
-                    ),
+                last_provider_error = ProviderRetryableError(
+                    str(exc)[:500],
+                    category="PROVIDER_UNAVAILABLE",
+                )
+                mark_failure(db, model_id, str(exc), settings=settings)
+                _log_failure(
+                    db,
+                    request_id=request_id,
+                    model_id=model_id,
+                    provider_name=provider_name,
+                    requested_model=req.requested_model,
+                    attempt_index=idx,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    provider_error=last_provider_error,
+                    requires_streaming=req.requires_streaming,
+                    requires_tools=req.requires_tools,
+                    requires_vision=req.requires_vision,
                 )
 
-        raise HTTPException(status_code=503, detail=str(last_error or "all candidates failed"), headers={"Retry-After": "10"})
+        raise HTTPException(status_code=502, detail=str(last_provider_error or "all candidates failed"))
 
     return router
