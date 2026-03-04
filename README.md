@@ -2,11 +2,11 @@
 
 # FreeLunch
 
-**A self-hosted, OpenAI-compatible gateway that automatically routes requests to the best available free model.**
+**A self-hosted, OpenAI-compatible gateway that routes requests to the best currently available free model.**
 
 *There’s no such thing as a free lunch.*
 
-[![Status](https://img.shields.io/badge/status-agent--handoff%20ready-2d7ff9)](./README.md)
+[![Status](https://img.shields.io/badge/status-active%20implementation-2d7ff9)](./README.md)
 [![Python](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-OpenAI--compatible-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/license-MIT-black)](./LICENSE)
@@ -15,36 +15,60 @@
 
 ---
 
-
-## Why the name
-
-**FreeLunch** is named after the saying: *there’s no such thing as a free lunch.*
-The project is built around squeezing useful work out of free-tier model endpoints while staying honest about limits, health, and tradeoffs.
-
 ## Why this exists
 
-Free model availability changes constantly. Clients like OpenClaw, Open WebUI, Kilo Code, and standard OpenAI SDK apps should not need to be reconfigured every time a better free model appears or a provider becomes flaky.
+Free model inventory changes constantly. A model that is healthy, fast, and free this morning may be rate-limited, degraded, or replaced by a better option tonight. Reconfiguring every OpenAI-compatible client every time that happens is operationally wasteful.
 
-**FreeLunch** gives you one stable `/v1` endpoint and handles the rest:
-- discovers available free models
-- ranks them using quality, health, and latency signals
-- routes only to healthy, capability-compatible candidates
-- fails over automatically when retryable provider errors occur
+**FreeLunch** gives you one stable `/v1` endpoint and continuously handles:
 
-The initial shipping build is **OpenRouter-first**, with a provider-plugin architecture that makes future adapters straightforward to add.
+- free-model discovery
+- benchmark enrichment
+- health-aware ranking
+- capability-aware routing
+- bounded failover across alternates
+- operator visibility through admin endpoints, runtime logs, and durable request telemetry
+
+The current implementation is intentionally **OpenRouter-first**. The architecture is provider-pluggable, but v1 stays narrow on purpose so runtime behavior is reliable and understandable.
+
+## What FreeLunch is
+
+FreeLunch is:
+
+- an OpenAI-compatible HTTP gateway
+- a single-node service with SQLite persistence
+- a routing layer that chooses among discovered healthy free models
+- a small scheduler that keeps model, health, benchmark, and config state fresh
+- an operator-friendly service with JSON admin endpoints and queue-backed runtime logs
+
+FreeLunch is not:
+
+- a local inference runner
+- a multi-node control plane
+- a broad multi-provider integration layer on day one
+- a web dashboard product
 
 ---
 
-## Highlights
+## Current implementation status
 
-- **OpenAI-compatible API** — drop-in `/v1/chat/completions` endpoint for OpenAI-style clients
-- **Automatic model selection** — routes to the best available free model without manual switching
-- **Bounded failover** — retries across ranked candidates on retryable provider failures
-- **Provider plugin system** — provider-specific logic stays isolated in `src/providers/*`
-- **Capability-aware routing** — filters by tools, vision, streaming, context size, and output limits
-- **Low-overhead architecture** — single process, SQLite, one dedicated writer thread, conservative background work
-- **Bootstrap readiness gating** — does not report ready until migrations, discovery, and initial routable state succeed
-- **Operational endpoints** — `/healthz`, `/readyz`, and JSON admin APIs for inspection and debugging
+The repository is past scaffolding and into refinement. The current codebase includes:
+
+- FastAPI app lifecycle with readiness gating
+- SQLite migrations and a dedicated writer thread
+- OpenRouter discovery, inference, streaming, probing, and normalized provider error handling
+- benchmark refresh for Chatbot Arena and Open LLM
+- routing that filters by health, capability, context fit, and request-time preferences
+- request token estimation with exact local counters where safe and calibrated local heuristics elsewhere
+- queue-backed runtime logging with `concise`, `verbose`, and `debug` modes
+- admin endpoints for models, config, health, logs, and manual refresh
+- installer scripts and CI coverage
+
+Use these tracking documents together:
+
+- `FREELUNCH_SPEC_v8.md`: the full target behavior
+- `SPEC_GAP_REVIEW.md`: current implementation-vs-spec snapshot
+- `TASKS.md`: active backlog
+- `AGENTS.md`: repo-specific engineering constraints and workflow guidance
 
 ---
 
@@ -57,53 +81,63 @@ flowchart LR
     Routing --> DB[("SQLite")]
     Routing --> Registry["Provider Registry"]
     Registry --> OpenRouter["OpenRouter Adapter"]
-    Proxy --> Relay["Failover and Streaming Relay"]
+    Proxy --> Relay["Failover and SSE Relay"]
     OpenRouter --> API["OpenRouter API"]
-    Jobs["Discovery / Ranking / Health Jobs"] --> DB
+    Jobs["Discovery / Ranking / Health / Maintenance / Config Refresh"] --> DB
     Jobs --> Registry
+    RuntimeLogs["Queue-backed Runtime Logs"] --> Ops["stdout / container logs"]
 ```
 
-### Core design rules
+Core rules:
 
-1. **Clients talk to one stable OpenAI-style endpoint.**
-2. **Routing logic stays provider-agnostic.**
-3. **Provider quirks live only inside adapter modules.**
-4. **Health checks are passive-first and budget-aware.**
-5. **All writes go through one SQLite writer path for stability.**
-
----
-
-## What ships in v1
-
-### Included
-- `openrouter` provider adapter
-- `/v1/chat/completions`
-- `/v1/models`
-- `/healthz` and `/readyz`
-- admin inspection endpoints
-- ranking, health, failover, migrations, request logging
-
-### Explicitly out of scope
-- local model execution (`ollama`, `llama.cpp`, `vLLM`)
-- multi-node / horizontally scaled deployments
-- embeddings routing in the initial release
-- full browser dashboard
-- broad multi-provider coverage on day one
+1. Clients talk to one stable OpenAI-style API surface.
+2. Routing, health, and proxy orchestration stay provider-agnostic.
+3. Provider quirks belong inside `src/providers/*`.
+4. SQLite is treated as a single-node durability layer, not a distributed database.
+5. Application writes flow through one writer thread.
+6. Runtime logs are operational events, not a replacement for durable request telemetry.
 
 ---
 
 ## Quick start
 
-### 1. Clone the repo
+### Option 1: bootstrap installer
+
+These scripts assume Docker is already installed and running.
+
+Linux / macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex
+```
+
+The installers:
+
+- create a Docker-based deployment under `~/.freelunch`
+- prompt for or consume `OPENROUTER_API_KEY`
+- write `.env` and runtime config
+- pull `ghcr.io/jetymas/FreeLunch:latest`
+- start the gateway
+
+Supported unattended inputs include:
+
+- `OPENROUTER_API_KEY`
+- `GATEWAY_API_KEY`
+- `FREELUNCH_PORT`
+- `FREELUNCH_INSTALL_DIR`
+- `FREELUNCH_AUTO_CONFIRM=yes`
+
+### Option 2: manual Docker setup
 
 ```bash
 git clone https://github.com/jetymas/FreeLunch.git
 cd FreeLunch
-```
-
-### 2. Configure it
-
-```bash
 cp config.yaml.example config.yaml
 cp .env.example .env
 ```
@@ -112,17 +146,16 @@ Set at least:
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-...
-# Optional
 GATEWAY_API_KEY=
 ```
 
-### 3. Start it
+Then start:
 
 ```bash
 docker compose up -d
 ```
 
-For a local non-Docker run:
+### Option 3: local non-Docker run
 
 ```bash
 python -m venv .venv
@@ -131,14 +164,21 @@ pip install -r requirements.txt -r requirements-dev.txt
 uvicorn src.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 4. Verify liveness and readiness
+### Verify startup
 
 ```bash
 curl http://localhost:8000/healthz
 curl http://localhost:8000/readyz
+curl http://localhost:8000/v1/models
 ```
 
-### 5. Send a request
+`/healthz` only means the process is alive. `/readyz` stays `503` until:
+
+- DB migrations succeed
+- bootstrap discovery completes
+- at least one active, healthy, routable model exists
+
+### Send a request
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -146,7 +186,7 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -d '{
     "model": "auto",
-    "messages": [{"role": "user", "content": "Hello!"}],
+    "messages": [{"role": "user", "content": "Reply with one short sentence."}],
     "stream": false
   }'
 ```
@@ -155,28 +195,35 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Client compatibility
 
-FreeLunch is designed to feel like a normal OpenAI-compatible endpoint.
+FreeLunch exposes the familiar OpenAI-style shape:
 
-It is intended to work cleanly with:
-- **OpenAI SDKs**
-- **OpenClaw**
-- **Open WebUI**
-- **Kilo Code**
-- **curl / custom clients**
+- `GET /v1/models`
+- `POST /v1/chat/completions`
 
-In most cases, integration is just:
-- set the base URL to your gateway
-- set the model to `auto`
-- optionally provide your gateway API key
+It is intended to work with:
 
-### Python OpenAI SDK
+- OpenAI SDKs
+- Open WebUI
+- OpenClaw
+- Kilo Code
+- curl and custom OpenAI-compatible clients
+
+Typical client configuration:
+
+- Base URL: `http://<host>:8000/v1`
+- Model: `auto`
+- API key: your `GATEWAY_API_KEY` if gateway auth is enabled
+
+If a client insists on a key even when gateway auth is disabled, a placeholder usually works.
+
+### Python OpenAI SDK example
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="your-gateway-key-or-any-placeholder-if-disabled",
+    api_key="your-gateway-key-or-placeholder",
 )
 
 response = client.chat.completions.create(
@@ -187,126 +234,522 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-### Open WebUI / OpenClaw / Kilo Code
+### Optional request-time routing headers
 
-Use these values:
-- Base URL: `http://<gateway-host>:8000/v1`
-- API key: your `GATEWAY_API_KEY` if gateway auth is enabled; otherwise any non-empty placeholder if the client insists on one
-- Model: `auto`
+When `routing.enable_request_preference_headers` is enabled, clients may send:
 
-If a client supports custom headers, you can also pass:
-- `X-Gateway-Preference: latency`
-- `X-Gateway-Max-Latency-Ms: 500`
-- `X-Gateway-Min-Context: 32000`
+- `X-Gateway-Preference: balanced|quality|latency|context|reliability`
+- `X-Gateway-Max-Latency-Ms: <int>`
+- `X-Gateway-Min-Context: <int>`
 
----
-
-## Provider plugins
-
-The gateway is built around a narrow provider boundary:
-
-```text
-src/providers/
-├── base.py
-├── registry.py
-└── openrouter.py
-```
-
-Each provider adapter is responsible for its own:
-- discovery
-- inference behavior
-- auth/header handling
-- error normalization
-- probe policy
-
-This keeps `routing.py`, `proxy.py`, and `health.py` from filling up with provider-specific conditionals.
-
----
-
-## Routing strategy
-
-When a request arrives, the gateway:
-
-1. parses capability requirements from the request
-2. builds a ranked candidate list from normalized model records
-3. filters out unhealthy or cooldown models
-4. attempts the best candidate first
-5. fails over to alternates on retryable provider-origin errors
-6. records telemetry for later ranking and health decisions
-
-The default path is optimized for:
-- **simplicity**
-- **robustness**
-- **compute efficiency**
-- **low memory overhead**
+These are preferences, not hard SLAs.
 
 ---
 
 ## Operational model
 
-### Health model
-- passive-first health signals from real traffic
-- minimal active probing
-- strict daily probe budgets for free-tier safety
-- cooldown with backoff for unstable models
+### Startup and readiness
+
+The app boots through `src/main.py` and:
+
+1. loads config and environment
+2. configures queue-backed runtime logging
+3. initializes SQLite and migrations
+4. starts the writer thread
+5. registers enabled providers
+6. runs the startup discovery pipeline
+7. recomputes readiness
+8. starts recurring scheduler jobs
+
+If OpenRouter is configured but cannot actually route requests at runtime, persisted rows are not trusted blindly. Models are deactivated when the provider is not inference-capable.
+
+### Discovery and model lifecycle
+
+Discovery is handled through provider adapters and normalized into the `models` table.
+
+Current behavior:
+
+- only free OpenRouter models are considered
+- disappeared provider rows are deactivated on later discovery runs
+- benchmark data from `leaderboard_cache` is joined by normalized model name
+- discovery attempts best-effort benchmark refresh before upserting provider rows
+- benchmark fetch failures degrade to missing enrichment, not failed discovery
+
+### Routing and failover
+
+For each request, the gateway:
+
+1. parses request requirements and optional routing preferences
+2. builds a ranked candidate set
+3. filters by health, activity, capabilities, context fit, and output-token limits
+4. tries candidates in bounded order
+5. fails over only on retryable provider errors
+
+`CONTEXT_EXCEEDED` is treated specially:
+
+- it is normalized as retryable for alternate-candidate selection
+- if all exhausted attempts ended with `CONTEXT_EXCEEDED`, the final client response is `400`, not `502`
+- context-only failures do not penalize model health
+
+### Health and probe policy
+
+Health combines:
+
+- passive request outcomes
+- bounded active probing
+- cooldown and recovery behavior
+
+Probe behavior is intentionally conservative:
+
+- strict daily per-provider budgets
+- capped startup probe count
+- stale-model and cooldown-recovery targeting
+- no aggressive exploration loops
 
 ### Persistence model
-- SQLite with WAL mode
-- dedicated writer thread
-- forward-only schema migrations
-- durable model, health, log, and cache state in one DB file
 
-### Readiness model
-The service is considered ready only after:
-- migrations succeed
-- bootstrap discovery succeeds
-- at least one routable model exists
+SQLite stores:
+
+- discovered models
+- request telemetry
+- benchmark cache
+- runtime config overrides
+
+Important design choices:
+
+- WAL mode
+- one dedicated writer thread for application writes
+- bounded write queue
+- low-priority client request logs are lossy under pressure
+- higher-priority metadata writes are protected by reserved queue capacity and blocking backpressure
 
 ---
 
-## Example configuration
+## Runtime logging and durable telemetry
+
+FreeLunch has two different logging/telemetry systems. They serve different purposes.
+
+### 1. Runtime logs
+
+Runtime logs are:
+
+- queue-backed
+- JSON-line formatted
+- emitted on a separate listener thread
+- intended for operators, container logs, and debugging
+
+Configuration:
+
+- `logging.runtime_enabled`
+- `logging.runtime_verbosity`
+- `logging.runtime_queue_size`
+
+Verbosity levels:
+
+- `concise`
+  - startup and shutdown milestones
+  - readiness changes
+  - request failures and major outcomes
+  - operator-facing state changes
+- `verbose`
+  - job completions
+  - richer provider attempt summaries
+  - benchmark refresh results
+  - stream completion/failure lifecycle events
+- `debug`
+  - scheduler and candidate-selection trace detail
+  - tokenizer resolution path
+  - cache hits, pending preload state, heuristic fallback reason
+  - detailed retry and request-attempt diagnostics
+
+Queue behavior:
+
+- low-priority runtime records can drop under pressure
+- warning-and-above records still attempt fallback emission
+- runtime logging is designed not to stall the hot request path
+
+`/admin/health.runtime_logging` reports:
+
+- `enabled`
+- `verbosity`
+- `queue_size`
+- `queue_depth`
+- `dropped_records`
+
+### 2. SQLite `request_log`
+
+`request_log` is:
+
+- durable
+- queryable through admin endpoints
+- used by health, ranking, and token-estimation review
+- separate from runtime logs
+
+This distinction matters:
+
+- disabling runtime logs does not disable health telemetry
+- disabling low-priority client request persistence does not disable runtime logs
+- probe/bootstrap telemetry continues to persist because health budgeting depends on it
+
+---
+
+## Token estimation pipeline
+
+The token estimation pipeline is complete under the current **local-only** design policy.
+
+Its job is not billing. Its job is pre-routing capacity estimation:
+
+- can this prompt fit in the candidate’s context window?
+- does the request require more completion capacity than the candidate exposes?
+- should a smaller-context candidate be filtered before the request is sent?
+
+### Exact local counting paths
+
+FreeLunch uses exact local token counting when it can do so safely:
+
+- `tiktoken` for OpenAI-compatible families and compatible tokenizer-family encodings
+- Hugging Face `AutoTokenizer` for non-OpenAI families that can be resolved safely with:
+  - `use_fast=True`
+  - `trust_remote_code=False`
+
+### Model-name normalization
+
+The resolver handles common provider-to-tokenizer naming mismatches, including:
+
+- OpenAI-prefixed GPT model IDs such as `openai/gpt-4o-mini`
+- Cohere Command-R aliases
+- DeepSeek org aliases
+- StepFun / Z.AI org aliases
+- Meta-Llama repo-name variants
+- NVIDIA Nemotron repo patterns
+- Mistral dated release suffixes
+- mixed alphanumeric tokens like `R1`, `32B`, and `A22B`
+
+### Heuristic fallback
+
+For unresolved local-only families, the gateway falls back to a calibrated local heuristic that is:
+
+- family-aware
+- content-type-aware
+- conservative
+
+The broad content classes are:
+
+- `prose`
+- `code`
+- `json`
+
+This heuristic path is the intended behavior for the remaining closed or unresolved ecosystems under current project policy.
+
+### Structured input handling
+
+The estimator accounts for:
+
+- multimodal vision content in OpenAI-style content arrays
+- tools
+- `response_format`
+- `tool_calls`
+- `function_call`
+- `audio`
+- `name`
+- `tool_call_id`
+- `refusal`
+
+### Background tokenizer preload behavior
+
+Discovery schedules best-effort background tokenizer preloads for non-OAI exact paths.
+
+Important details:
+
+- uncached families do not block the request path waiting for preload
+- first-use requests can still fall back to heuristics while preload is pending
+- successful tokenizer loads are cached in-process
+- transient load failures are retried later
+- shutdown cancellation of background preload futures is expected and now logs as a debug-only cancellation event rather than a warning-level failure
+
+### Token-estimation review
+
+The gateway records review evidence in `request_log`, including:
+
+- selected provider model
+- selected tokenizer family
+- estimated prompt tokens
+- selected context window snapshot
+- provider-reported prompt tokens when available
+
+`/admin/health.token_estimation_review` summarizes the last 7 days and is intended for manual operator review.
+
+Key fields/operators should watch:
+
+- `context_exceeded_by_tokenizer_family`
+- `context_failover_recoveries`
+- `estimation_mismatch_by_tokenizer_family`
+- `review_flags`
+
+Those flags are advisory only. They do not auto-expand tokenizer support.
+
+### Current policy
+
+Under the accepted project policy:
+
+- remote provider-native counting is not used on the request path
+- tokenizer prewarming is not enabled by default
+- the local-only token-estimation pipeline is treated as complete
+- future work should be evidence-driven calibration or safe local mapping extensions
+
+---
+
+## Benchmark ingestion
+
+Discovery enrichment currently uses two public sources:
+
+- Chatbot Arena
+- Open LLM leaderboard
+
+### Current resilience behavior
+
+Chatbot Arena refresh:
+
+- tries the newest parseable `elo_results_*.pkl` snapshot first
+- then newer-to-older `leaderboard_table_*.csv`
+- then `arena_hard_auto_leaderboard_*.csv`
+
+Open LLM refresh:
+
+- uses the Hugging Face dataset API
+- respects the current dataset-server row page-size limit
+- walks the dataset in pages instead of assuming a larger `rows` request is always valid
+
+Cache behavior:
+
+- per-source freshness windows are respected
+- refresh is skipped when cached source data is fresh enough
+
+Operator expectation:
+
+- this is still best-effort because public artifact schemas can drift
+- benchmark failures should reduce enrichment quality, not take the gateway down
+
+---
+
+## OpenRouter behavior
+
+The shipping provider is `openrouter`.
+
+Current provider behavior includes:
+
+- authenticated model discovery
+- chat completions
+- SSE streaming relay
+- normalized retryable vs non-retryable error categories
+- bounded retry logic inside the adapter for request transport failures
+
+### Live production behavior
+
+With a real OpenRouter key:
+
+- discovery returns real free-model inventory
+- app startup can become ready from real discovered rows
+- `/v1/chat/completions` routes through the real provider path
+- `/v1/models` exposes the active healthy model pool maintained by FreeLunch
+
+### Dev stub behavior
+
+The no-key OpenRouter stub still exists, but it is:
+
+- explicit
+- disabled by default
+- honored only in `APP_ENV=dev`
+
+Outside dev, `providers.openrouter.dev_stub_enabled` is ignored.
+
+Production guidance:
+
+- keep `providers.openrouter.dev_stub_enabled: false`
+- set a real `OPENROUTER_API_KEY`
+- expect persisted stale OpenRouter rows to be deactivated if runtime inference capability disappears
+
+### Error normalization
+
+Provider errors are normalized into categories such as:
+
+- `RATE_LIMITED`
+- `PROVIDER_UNAVAILABLE`
+- `INVALID_REQUEST`
+- `AUTH_ERROR`
+- `CONTEXT_EXCEEDED`
+
+This is what allows provider-specific behavior to stay in the adapter while routing and proxy logic remain provider-agnostic.
+
+---
+
+## Admin endpoints
+
+FreeLunch exposes operator-facing JSON admin endpoints.
+
+### Liveness and readiness
+
+- `GET /healthz`
+- `GET /readyz`
+
+### Model inspection and control
+
+- `GET /admin/models`
+- `GET /admin/models/{id}`
+- `POST /admin/models/{id}/disable`
+- `POST /admin/models/{id}/enable`
+
+### Health and runtime state
+
+- `GET /admin/health`
+
+This currently includes:
+
+- bootstrap state
+- DB writer queue depth
+- runtime logging status
+- model/provider summary
+- scheduler job status
+- probe budgets
+- probe runtime state
+- recent probe/bootstrap activity
+- token-estimation review summary
+- recent model error summary
+
+### Config inspection and runtime overrides
+
+- `GET /admin/config`
+- `PUT /admin/config/{key}`
+- `DELETE /admin/config/{key}`
+
+Overrides apply to the running app and are also refreshed by a periodic `config_refresh` scheduler job.
+
+### Manual refresh
+
+- `POST /admin/refresh`
+
+This forces an immediate discovery/ranking pass through the same discovery runner used by scheduled jobs.
+
+### Recent request telemetry
+
+- `GET /admin/logs`
+
+This is sourced from durable SQLite telemetry, not the runtime log queue.
+
+---
+
+## Configuration guide
+
+`config.yaml.example` is the best concise reference for currently implemented settings. The main groups are:
+
+- `app`
+- `providers`
+- `discovery`
+- `routing`
+- `ranking`
+- `health`
+- `logging`
+
+### Provider gating
+
+There are four different control surfaces and they are intentionally distinct:
+
+- `providers.enabled`
+  - global allow-list
+- `providers.<name>.enabled`
+  - disables the provider entirely
+- `providers.<name>.discovery_enabled`
+  - keeps it out of discovery while preserving runtime semantics for already-known rows
+- `providers.<name>.inference_enabled`
+  - removes it from routing/probing and deactivates its rows until it is re-enabled and rediscovered
+
+### Logging settings
 
 ```yaml
-gateway:
-  host: "0.0.0.0"
-  port: 8000
-  workers: 1
-
-providers:
-  enabled:
-    - openrouter
-
-  openrouter:
-    enabled: true
-    discovery_enabled: true
-    inference_enabled: true
-    active_probe_enabled: true
-    api_base: "https://openrouter.ai/api/v1"
-    api_key_env: "OPENROUTER_API_KEY"
-    free_only: true
-    fallback_model: "openrouter/openrouter/free"
-
-discovery:
-  interval_minutes: 30
-  request_timeout_seconds: 15
-  leaderboard:
-    chatbot_arena:
-      enabled: true
-      cache_hours: 24
-    open_llm:
-      enabled: true
-      cache_hours: 24
-
-routing:
-  max_attempts: 3
-
-health:
-  probe_interval_minutes: 180
-  max_probes_per_run: 1
-
-ranking:
-  fallback_model: "openrouter/openrouter/free"
+logging:
+  runtime_enabled: true
+  runtime_verbosity: concise
+  runtime_queue_size: 1000
+  request_log_enabled: true
+  log_queue_size: 5000
+  request_log_retention_days: 30
 ```
+
+### Health and budget settings
+
+Probe policy is intentionally conservative. The most important operator knobs are:
+
+- `health.probe_interval_minutes`
+- `health.max_probes_per_run`
+- `health.startup_probe_limit`
+- `health.daily_request_budget_by_provider`
+
+### Discovery and benchmark settings
+
+The benchmark refresh cadence is operator-controlled:
+
+- `discovery.interval_minutes`
+- `discovery.request_timeout_seconds`
+- `discovery.leaderboard.chatbot_arena.enabled`
+- `discovery.leaderboard.chatbot_arena.cache_hours`
+- `discovery.leaderboard.open_llm.enabled`
+- `discovery.leaderboard.open_llm.cache_hours`
+
+---
+
+## Recommended production posture
+
+For a real deployment:
+
+1. set `OPENROUTER_API_KEY`
+2. keep `providers.openrouter.dev_stub_enabled: false`
+3. leave runtime logging enabled at `concise` unless diagnosing something specific
+4. watch `/readyz` and `/admin/health`
+5. treat benchmark refresh failures as enrichment degradation, not an immediate outage
+6. treat `/admin/health.token_estimation_review.review_flags` as manual investigation triggers
+
+If you do not want outbound Hugging Face tokenizer downloads:
+
+- the gateway still works
+- unresolved families fall back to heuristics
+- use `/admin/health.token_estimation_review` to watch for drift
+
+If you do allow Hugging Face tokenizer access:
+
+- exact non-OAI sizing improves over time as tokenizer assets are loaded and cached
+- first-use requests still do not block on preload; they may temporarily use heuristics while preload completes
+
+---
+
+## Local development
+
+Common commands:
+
+```bash
+python -m ruff check .
+python -m mypy src
+python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
+python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
+```
+
+Focused examples:
+
+```bash
+python -m pytest tests/test_openrouter.py -q --basetemp .pytest_tmp_openrouter -p no:cacheprovider
+python -m pytest tests/test_tokens.py -q --basetemp .pytest_tmp_tokens -p no:cacheprovider
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Useful manual probes:
+
+```bash
+curl http://localhost:8000/healthz
+curl http://localhost:8000/readyz
+curl http://localhost:8000/v1/models
+curl http://localhost:8000/admin/health
+```
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for workflow expectations and doc-sync requirements.
 
 ---
 
@@ -323,6 +766,7 @@ src/
 ├── proxy.py
 ├── ranking.py
 ├── routing.py
+├── runtime_logging.py
 ├── scheduler.py
 ├── tokens.py
 └── providers/
@@ -331,72 +775,33 @@ src/
     └── openrouter.py
 ```
 
----
+Key docs:
 
-## Project status
-
-This repository is currently specified around an **OpenRouter-first, provider-pluggable v1**.
-
-That means:
-- the architecture is designed for more providers later
-- the first shipping implementation stays intentionally narrow
-- correctness and operational simplicity take priority over broad provider coverage
-
-### Tracking documents
-
-- `FREELUNCH_SPEC_v8.md` is the authoritative product spec.
-- `SPEC_GAP_REVIEW.md` captures current implementation-vs-spec gaps.
-- `TASKS.md` is the actionable backlog derived from the latest review.
-- `AGENTS.md` gives repo-specific guidance for coding agents and maintainers.
+- `FREELUNCH_SPEC_v8.md`
+- `SPEC_GAP_REVIEW.md`
+- `TASKS.md`
+- `AGENTS.md`
+- `CONTRIBUTING.md`
+- `CHANGELOG.md`
 
 ---
 
 ## Roadmap
 
-Planned future work includes:
+Likely future directions:
+
 - additional provider adapters
 - embeddings routing
-- metrics export / Prometheus support
-- model pinning policies
-- optional PostgreSQL backend
-- local inference adapters as separate future modules
+- richer metrics export
+- optional alternate persistence backends
+- further operator/runbook depth
 
----
+The current design still prioritizes:
 
-## Development philosophy
-
-This project deliberately favors:
-- **one clear abstraction boundary** over many clever shortcuts
-- **predictable failure behavior** over aggressive probing or optimistic assumptions
-- **small, composable modules** over tightly coupled orchestration
-- **single-node reliability** before horizontal complexity
-
-## Development
-
-Common validation commands:
-
-```bash
-python -m ruff check .
-python -m mypy src
-python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
-python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
-```
-
-Common local workflows:
-
-```bash
-# Run the API locally
-uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
-
-# Run a focused test file
-python -m pytest tests/test_api.py -q --basetemp .pytest_tmp_api -p no:cacheprovider
-
-# Exercise the OpenAI-compatible endpoint manually
-curl http://localhost:8000/v1/models
-curl http://localhost:8000/admin/health
-```
-
-The repo intentionally excludes local vendored dependency folders such as `.pydeps` from linting so repo-wide commands stay focused on project code.
+- predictable runtime behavior
+- low operational overhead
+- provider-boundary cleanliness
+- single-node reliability before complexity
 
 ---
 
@@ -406,6 +811,6 @@ MIT.
 
 ---
 
-## Notes for publishing
+## Publishing note
 
-This README uses `jetymas` as a publication token. Replace it with the real GitHub user or organization before publishing the repository publicly.
+This README still uses `jetymas` as the publication token in example URLs. Replace it with the final GitHub owner or organization before public release.

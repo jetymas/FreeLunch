@@ -9,6 +9,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from src.discover import run_discovery
 from src.health import bootstrap_health_check, run_health_checks
 from src.ranking import recompute_ranking
+from src.runtime_logging import get_logger, runtime_log
+
+logger = get_logger(__name__)
 
 
 async def run_discovery_pipeline(
@@ -18,6 +21,12 @@ async def run_discovery_pipeline(
     settings,
     recompute_readiness: Callable[[], bool],
 ) -> dict[str, int | bool]:
+    runtime_log(
+        logger,
+        "pipeline.discovery.started",
+        verbosity="verbose",
+        message="Running discovery pipeline",
+    )
     discovered = await run_discovery(db, registry, settings=settings)
     db.writer.flush()
 
@@ -28,12 +37,20 @@ async def run_discovery_pipeline(
     db.writer.flush()
 
     ready = recompute_readiness()
-    return {
+    outcome = {
         "discovered": discovered,
         "ranking_updates": ranking_updates,
         "probed_models": health_outcome["probed"],
         "ready": ready,
     }
+    runtime_log(
+        logger,
+        "pipeline.discovery.completed",
+        verbosity="verbose",
+        message="Discovery pipeline completed",
+        **outcome,
+    )
+    return outcome
 
 
 def build_scheduler() -> AsyncIOScheduler:
@@ -64,12 +81,38 @@ def _track_job(
     job_status: dict[str, dict[str, object]], name: str, fn: Callable[[], object]
 ) -> object:
     entry = _mark_job_start(job_status, name)
+    runtime_log(
+        logger,
+        "scheduler.job.started",
+        verbosity="debug",
+        message="Scheduler job started",
+        job_name=name,
+        run_count=entry.get("run_count", 0),
+    )
     try:
         result = fn()
         _mark_job_success(entry)
+        runtime_log(
+            logger,
+            "scheduler.job.succeeded",
+            verbosity="verbose",
+            message="Scheduler job completed",
+            job_name=name,
+            run_count=entry.get("run_count", 0),
+        )
         return result
     except Exception as exc:
         _mark_job_failure(entry, exc)
+        runtime_log(
+            logger,
+            "scheduler.job.failed",
+            verbosity="concise",
+            level=40,
+            message="Scheduler job failed",
+            job_name=name,
+            run_count=entry.get("run_count", 0),
+            exc_info=True,
+        )
         raise
 
 
@@ -79,12 +122,38 @@ async def _track_job_async(
     fn: Callable[[], Awaitable[object]],
 ) -> object:
     entry = _mark_job_start(job_status, name)
+    runtime_log(
+        logger,
+        "scheduler.job.started",
+        verbosity="debug",
+        message="Scheduler job started",
+        job_name=name,
+        run_count=entry.get("run_count", 0),
+    )
     try:
         result = await fn()
         _mark_job_success(entry)
+        runtime_log(
+            logger,
+            "scheduler.job.succeeded",
+            verbosity="verbose",
+            message="Scheduler job completed",
+            job_name=name,
+            run_count=entry.get("run_count", 0),
+        )
         return result
     except Exception as exc:
         _mark_job_failure(entry, exc)
+        runtime_log(
+            logger,
+            "scheduler.job.failed",
+            verbosity="concise",
+            level=40,
+            message="Scheduler job failed",
+            job_name=name,
+            run_count=entry.get("run_count", 0),
+            exc_info=True,
+        )
         raise
 
 

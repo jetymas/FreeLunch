@@ -1,0 +1,18 @@
+app:
+  env: dev
+providers:
+  enabled:
+    - openrouter
+  openrouter:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    dev_stub_enabled: true
+discovery:
+  leaderboard:
+    chatbot_arena:
+      enabled: false
+    open_llm:
+      enabled: false
+logging:
+  runtime_enabled: false

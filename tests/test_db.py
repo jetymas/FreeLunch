@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from src.benchmarks import normalize_model_name
-from src.db import DB_SCHEMA_VERSION, Database
+from src.db import DB_SCHEMA_VERSION, HIGH_PRIORITY_QUEUE_RESERVE, Database
 from src.discover import run_discovery
 
 
@@ -135,6 +135,166 @@ def test_prune_old_logs_removes_entries_older_than_retention(tmp_path):
 
     assert deleted == 1
     assert [row["selected_model_id"] for row in rows] == ["model-new"]
+
+
+def test_client_request_logs_respect_logging_policy_without_blocking_probe_logs(tmp_path):
+    db = Database(
+        str(tmp_path / "db-log-policy.db"),
+        request_log_enabled=False,
+        request_log_queue_size=1,
+    )
+    db.init()
+    db.writer.start()
+
+    client_logged = db.log_request(
+        {
+            "request_id": "client-1",
+            "request_source": "client",
+            "selected_model_id": "model-client",
+            "provider_id": "openrouter",
+            "success": True,
+        }
+    )
+    probe_logged = db.log_request(
+        {
+            "request_id": "probe-1",
+            "request_source": "probe",
+            "selected_model_id": "model-probe",
+            "provider_id": "openrouter",
+            "success": True,
+        }
+    )
+    db.writer.flush()
+
+    with db.read_conn() as conn:
+        rows = conn.execute(
+            "SELECT request_id, request_source FROM request_log ORDER BY request_id"
+        ).fetchall()
+
+    db.writer.stop()
+
+    assert client_logged is False
+    assert probe_logged is True
+    assert [(row["request_id"], row["request_source"]) for row in rows] == [
+        ("probe-1", "probe"),
+    ]
+
+
+def test_client_request_logs_drop_when_low_priority_queue_is_full(tmp_path):
+    db = Database(
+        str(tmp_path / "db-log-cap.db"),
+        request_log_enabled=True,
+        request_log_queue_size=1,
+    )
+
+    first_logged = db.log_request(
+        {
+            "request_id": "client-1",
+            "request_source": "client",
+            "selected_model_id": "model-a",
+            "provider_id": "openrouter",
+            "success": True,
+        }
+    )
+    second_logged = db.log_request(
+        {
+            "request_id": "client-2",
+            "request_source": "client",
+            "selected_model_id": "model-b",
+            "provider_id": "openrouter",
+            "success": True,
+        }
+    )
+
+    assert first_logged is True
+    assert second_logged is False
+    assert db.writer.dropped_low_priority_logs() == 1
+
+
+def test_high_priority_writes_use_reserved_queue_capacity(tmp_path):
+    db = Database(
+        str(tmp_path / "db-queue-reserve.db"),
+        request_log_enabled=True,
+        request_log_queue_size=1,
+    )
+    db.init()
+
+    client_logged = db.log_request(
+        {
+            "request_id": "client-1",
+            "request_source": "client",
+            "selected_model_id": "model-a",
+            "provider_id": "openrouter",
+            "success": True,
+        }
+    )
+    db.set_override("gateway.port", 8080)
+
+    db.writer.start()
+    db.writer.flush()
+
+    with db.read_conn() as conn:
+        override = conn.execute(
+            "SELECT value FROM config_overrides WHERE key='gateway.port'"
+        ).fetchone()
+
+    db.writer.stop()
+
+    assert client_logged is True
+    assert override is not None
+    assert override["value"] == "8080"
+
+
+def test_writer_queue_capacity_reserves_space_for_metadata_writes(tmp_path):
+    db = Database(
+        str(tmp_path / "db-queue-capacity.db"),
+        request_log_enabled=True,
+        request_log_queue_size=3,
+    )
+
+    assert db.writer.queue_capacity() == 3 + HIGH_PRIORITY_QUEUE_RESERVE
+
+
+def test_log_request_persists_token_estimation_observability_fields(tmp_path):
+    db = Database(str(tmp_path / "db-token-observability.db"))
+    db.init()
+    db.writer.start()
+
+    logged = db.log_request(
+        {
+            "request_id": "client-1",
+            "request_source": "client",
+            "selected_model_id": "openrouter/model-a",
+            "provider_id": "openrouter",
+            "selected_provider_model_id": "model-a",
+            "selected_tokenizer_family": "cl100k_base",
+            "estimated_prompt_tokens": 321,
+            "selected_context_window": 16384,
+            "prompt_tokens": 400,
+            "success": True,
+        }
+    )
+    db.writer.flush()
+
+    with db.read_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT selected_provider_model_id, selected_tokenizer_family,
+                   estimated_prompt_tokens, selected_context_window, prompt_tokens
+            FROM request_log
+            WHERE request_id='client-1'
+            """
+        ).fetchone()
+
+    db.writer.stop()
+
+    assert logged is True
+    assert row is not None
+    assert row["selected_provider_model_id"] == "model-a"
+    assert row["selected_tokenizer_family"] == "cl100k_base"
+    assert row["estimated_prompt_tokens"] == 321
+    assert row["selected_context_window"] == 16384
+    assert row["prompt_tokens"] == 400
 
 
 def test_normalize_model_name_drops_common_noise_tokens():

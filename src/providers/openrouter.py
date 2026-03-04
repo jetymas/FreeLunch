@@ -16,12 +16,85 @@ from src.providers.base import (
 )
 
 
+def categorize_openrouter_error(
+    status_code: int | None,
+    error_code: str | None,
+    message: str,
+) -> tuple[GatewayErrorCategory, bool]:
+    message_lower = message.lower()
+    code_lower = (error_code or "").lower()
+
+    if code_lower in {
+        "context_length_exceeded",
+        "max_tokens_exceeded",
+        "token_limit_exceeded",
+        "string_too_long",
+    } or any(
+        phrase in message_lower
+        for phrase in {
+            "context length",
+            "maximum context length",
+            "too many tokens",
+            "token limit",
+        }
+    ):
+        return "CONTEXT_EXCEEDED", True
+    if (
+        status_code == 429
+        or code_lower in {"429", "rate_limit_exceeded", "rate_limited"}
+        or "rate limit" in message_lower
+    ):
+        return "RATE_LIMITED", True
+    if status_code in {401, 402} or code_lower in {
+        "401",
+        "402",
+        "invalid_api_key",
+        "invalid_credentials",
+        "insufficient_credits",
+        "payment_required",
+    }:
+        return "AUTH_ERROR", False
+    if status_code in {400, 403, 404} or code_lower in {
+        "400",
+        "403",
+        "404",
+        "invalid_request",
+        "invalid_model",
+        "moderation_error",
+    }:
+        return "INVALID_REQUEST", False
+    if status_code in {408, 409, 425, 500, 502, 503, 504} or code_lower in {
+        "408",
+        "409",
+        "425",
+        "500",
+        "502",
+        "503",
+        "504",
+        "server_error",
+        "provider_error",
+    }:
+        return "PROVIDER_UNAVAILABLE", True
+    if status_code is None:
+        return "PROVIDER_UNAVAILABLE", True
+    if status_code >= 500:
+        return "PROVIDER_UNAVAILABLE", True
+    return "INVALID_REQUEST", False
+
+
 class OpenRouterAdapter:
     name = "openrouter"
 
-    def __init__(self, api_key: str, api_base: str = "https://openrouter.ai/api/v1") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        api_base: str = "https://openrouter.ai/api/v1",
+        *,
+        dev_stub_enabled: bool = False,
+    ) -> None:
         self.api_key = api_key
         self.api_base = api_base.rstrip("/")
+        self.dev_stub_enabled = dev_stub_enabled
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -31,6 +104,12 @@ class OpenRouterAdapter:
 
     async def discover_models(self) -> list[dict[str, Any]]:
         if not self.api_key:
+            if not self.dev_stub_enabled:
+                raise ProviderFatalError(
+                    "openrouter api key is required",
+                    category="AUTH_ERROR",
+                    status_code=401,
+                )
             return [self._fallback_model()]
 
         response = await self._request_with_retries("GET", "/models", timeout_seconds=15)
@@ -82,10 +161,16 @@ class OpenRouterAdapter:
                     "is_healthy": 1,
                 }
             )
-        return models or [self._fallback_model()]
+        return models
 
     async def chat_completions(self, request_body: dict[str, Any], model: str) -> ChatResult:
         if not self.api_key:
+            if not self.dev_stub_enabled:
+                raise ProviderFatalError(
+                    "openrouter api key is required",
+                    category="AUTH_ERROR",
+                    status_code=401,
+                )
             prompt = request_body.get("messages", [{}])[-1].get("content", "")
             return ChatResult(
                 payload={
@@ -127,6 +212,12 @@ class OpenRouterAdapter:
         self, request_body: dict[str, Any], model: str
     ) -> StreamResult:
         if not self.api_key:
+            if not self.dev_stub_enabled:
+                raise ProviderFatalError(
+                    "openrouter api key is required",
+                    category="AUTH_ERROR",
+                    status_code=401,
+                )
             return StreamResult(events=self._stub_stream(model, request_body))
 
         body = dict(request_body)
@@ -294,30 +385,7 @@ class OpenRouterAdapter:
         error_code: str | None,
         message: str,
     ) -> tuple[GatewayErrorCategory, bool]:
-        message_lower = message.lower()
-        code_lower = (error_code or "").lower()
-
-        if code_lower in {"context_length_exceeded", "max_tokens_exceeded"} or any(
-            phrase in message_lower
-            for phrase in {
-                "context length",
-                "maximum context length",
-                "too many tokens",
-                "token limit",
-            }
-        ):
-            return "CONTEXT_EXCEEDED", True
-        if status_code == 429 or "rate limit" in message_lower:
-            return "RATE_LIMITED", True
-        if status_code in {401, 402}:
-            return "AUTH_ERROR", False
-        if status_code in {400, 403, 404}:
-            return "INVALID_REQUEST", False
-        if status_code in {408, 409, 425, 500, 502, 503, 504}:
-            return "PROVIDER_UNAVAILABLE", True
-        if status_code >= 500:
-            return "PROVIDER_UNAVAILABLE", True
-        return "INVALID_REQUEST", False
+        return categorize_openrouter_error(status_code, error_code, message)
 
     async def _stub_stream(
         self, model: str, request_body: dict[str, Any]

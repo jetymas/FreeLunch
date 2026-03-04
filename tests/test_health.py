@@ -6,7 +6,10 @@ from src.config import Settings
 from src.db import Database, utc_now_iso
 from src.health import (
     ROLLING_METRIC_ALPHA,
+    get_probe_runtime_summary,
     get_provider_probe_usage,
+    get_recent_probe_activity,
+    get_token_estimation_review_summary,
     mark_failure,
     mark_success,
     run_health_checks,
@@ -194,3 +197,216 @@ def test_get_provider_probe_usage_counts_bootstrap_and_probe(tmp_path):
     db.writer.stop()
 
     assert usage == 2
+
+
+def test_get_recent_probe_activity_summarizes_probe_and_bootstrap_logs(tmp_path):
+    db = Database(str(tmp_path / "health-activity.db"))
+    db.init()
+    db.writer.start()
+    _insert_model(db, "model-a")
+    _insert_model(db, "model-b")
+    db.writer.enqueue(
+        """
+        INSERT INTO request_log(
+            timestamp, request_source, selected_model_id, provider_id, success
+        ) VALUES
+            (?, 'probe', 'model-a', 'openrouter', 1),
+            (?, 'bootstrap', 'model-a', 'openrouter', 0),
+            (?, 'client', 'model-b', 'openrouter', 1)
+        """,
+        (utc_now_iso(), utc_now_iso(), utc_now_iso()),
+    )
+    db.writer.flush()
+
+    summary = get_recent_probe_activity(db)
+    db.writer.stop()
+
+    assert summary["total_requests"] == 2
+    assert summary["successes"] == 1
+    assert summary["failures"] == 1
+    assert {item["request_source"] for item in summary["by_source"]} == {"bootstrap", "probe"}
+    assert summary["by_provider"][0]["provider_id"] == "openrouter"
+    assert summary["by_provider"][0]["total_requests"] == 2
+
+
+def test_get_probe_runtime_summary_reports_bucket_counts_and_candidate_preview(tmp_path):
+    db = Database(str(tmp_path / "health-runtime.db"))
+    db.init()
+    db.writer.start()
+    _insert_model(db, "cooldown-recovery")
+    _insert_model(db, "never-probed")
+    _insert_model(db, "active-cooldown")
+    db.writer.enqueue(
+        """
+        UPDATE models
+        SET cooldown_until='2025-01-01T00:00:00Z', last_probe_at='2025-01-01T00:00:00Z'
+        WHERE id='cooldown-recovery'
+        """
+    )
+    db.writer.enqueue(
+        """
+        UPDATE models
+        SET cooldown_until='2099-01-01T00:00:00Z', last_probe_at='2025-01-01T00:00:00Z'
+        WHERE id='active-cooldown'
+        """
+    )
+    db.writer.flush()
+
+    summary = get_probe_runtime_summary(
+        db,
+        Settings(
+            health_max_probes_per_run=2,
+            health_stale_after_minutes=1,
+            health_daily_request_budget_by_provider={"openrouter": 5},
+        ),
+    )
+    db.writer.stop()
+
+    assert summary["policy"]["max_probes_per_run"] == 2
+    assert summary["buckets"]["cooldown_recovery"] == 1
+    assert summary["buckets"]["never_probed"] == 1
+    assert summary["buckets"]["active_cooldowns"] == 1
+    assert len(summary["next_candidates"]) == 2
+    assert summary["next_candidates"][0]["model_id"] == "cooldown-recovery"
+    assert summary["next_candidates"][0]["reason"] == "cooldown_recovery"
+    assert summary["next_candidates"][1]["model_id"] == "never-probed"
+    assert summary["next_candidates"][1]["reason"] == "never_probed"
+
+
+def test_get_token_estimation_review_summary_flags_context_failure_rates(tmp_path):
+    db = Database(str(tmp_path / "health-token-context.db"))
+    db.init()
+    db.writer.start()
+    _insert_model(db, "model-cl100k")
+    _insert_model(db, "model-llama")
+    db.writer.enqueue("UPDATE models SET tokenizer_family='cl100k_base' WHERE id='model-cl100k'")
+    db.writer.enqueue("UPDATE models SET tokenizer_family='llama3' WHERE id='model-llama'")
+
+    now = utc_now_iso()
+    db.writer.enqueue(
+        """
+        INSERT INTO request_log(
+            request_id, timestamp, request_source, selected_model_id, provider_id, success, gateway_error_category
+        ) VALUES
+            ('ctx-1', ?, 'client', 'model-llama', 'openrouter', 0, 'CONTEXT_EXCEEDED'),
+            ('ctx-2', ?, 'client', 'model-llama', 'openrouter', 0, 'CONTEXT_EXCEEDED'),
+            ('ctx-3', ?, 'client', 'model-llama', 'openrouter', 0, 'CONTEXT_EXCEEDED'),
+            ('ctx-4', ?, 'client', 'model-llama', 'openrouter', 0, 'CONTEXT_EXCEEDED'),
+            ('ctx-5', ?, 'client', 'model-llama', 'openrouter', 0, 'CONTEXT_EXCEEDED'),
+            ('ok-1', ?, 'client', 'model-llama', 'openrouter', 1, NULL),
+            ('ok-2', ?, 'client', 'model-cl100k', 'openrouter', 1, NULL),
+            ('ok-3', ?, 'client', 'model-cl100k', 'openrouter', 1, NULL)
+        """,
+        (now, now, now, now, now, now, now, now),
+    )
+    db.writer.flush()
+
+    summary = get_token_estimation_review_summary(db)
+    db.writer.stop()
+
+    llama_row = next(
+        row
+        for row in summary["context_exceeded_by_tokenizer_family"]
+        if row["tokenizer_family"] == "llama3"
+    )
+    assert llama_row["context_exceeded_failures"] == 5
+    assert llama_row["flagged_for_review"] is True
+    assert {
+        item["tokenizer_family"] for item in summary["review_flags"]["tokenizer_families"]
+    } == {"llama3"}
+
+
+def test_get_token_estimation_review_summary_flags_failover_recoveries(tmp_path):
+    db = Database(str(tmp_path / "health-token-failover.db"))
+    db.init()
+    db.writer.start()
+    _insert_model(db, "model-small")
+    _insert_model(db, "model-large")
+    db.writer.enqueue(
+        "UPDATE models SET tokenizer_family='qwen2', context_window=200 WHERE id='model-small'"
+    )
+    db.writer.enqueue(
+        "UPDATE models SET tokenizer_family='qwen2', context_window=16000 WHERE id='model-large'"
+    )
+
+    now = utc_now_iso()
+    db.writer.enqueue(
+        """
+        INSERT INTO request_log(
+            request_id, timestamp, request_source, selected_model_id, provider_id,
+            attempt_index, success, gateway_error_category, selected_context_window
+        ) VALUES
+            ('req-1', ?, 'client', 'model-small', 'openrouter', 0, 0, 'CONTEXT_EXCEEDED', 200),
+            ('req-1', ?, 'client', 'model-large', 'openrouter', 1, 1, NULL, 16000),
+            ('req-2', ?, 'client', 'model-small', 'openrouter', 0, 0, 'CONTEXT_EXCEEDED', 200),
+            ('req-2', ?, 'client', 'model-large', 'openrouter', 1, 1, NULL, 16000),
+            ('req-3', ?, 'client', 'model-small', 'openrouter', 0, 0, 'CONTEXT_EXCEEDED', 200),
+            ('req-3', ?, 'client', 'model-large', 'openrouter', 1, 1, NULL, 16000)
+        """,
+        (now, now, now, now, now, now),
+    )
+    db.writer.enqueue(
+        "UPDATE models SET context_window=32000 WHERE id='model-small'"
+    )
+    db.writer.enqueue(
+        "UPDATE models SET context_window=256 WHERE id='model-large'"
+    )
+    db.writer.flush()
+
+    summary = get_token_estimation_review_summary(db)
+    db.writer.stop()
+
+    family_row = next(
+        row
+        for row in summary["context_failover_recoveries"]["by_tokenizer_family"]
+        if row["tokenizer_family"] == "qwen2"
+    )
+    assert family_row["recovered_requests"] == 3
+    assert family_row["flagged_for_review"] is True
+    assert summary["context_failover_recoveries"]["total_requests"] == 3
+
+
+def test_get_token_estimation_review_summary_flags_prompt_token_mismatch_ratio(tmp_path):
+    db = Database(str(tmp_path / "health-token-mismatch-unavailable.db"))
+    db.init()
+    db.writer.start()
+    _insert_model(db, "model-qwen")
+    db.writer.enqueue("UPDATE models SET tokenizer_family='qwen2' WHERE id='model-qwen'")
+    now = utc_now_iso()
+    mismatch_rows = []
+    for index in range(20):
+        mismatch_rows.append(
+            (
+                f"mismatch-{index}",
+                now,
+                "client",
+                "model-qwen",
+                "openrouter",
+                "qwen-model",
+                "qwen2",
+                80,
+                120,
+            )
+        )
+    for row in mismatch_rows:
+        db.writer.enqueue(
+            """
+            INSERT INTO request_log(
+                request_id, timestamp, request_source, selected_model_id, provider_id,
+                selected_provider_model_id, selected_tokenizer_family,
+                estimated_prompt_tokens, prompt_tokens, success
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            row,
+        )
+    db.writer.flush()
+
+    summary = get_token_estimation_review_summary(db)
+    db.writer.stop()
+
+    mismatch = summary["estimation_mismatch_by_tokenizer_family"]
+    assert mismatch["available"] is True
+    qwen_row = next(row for row in mismatch["entries"] if row["tokenizer_family"] == "qwen2")
+    assert qwen_row["sample_count"] == 20
+    assert qwen_row["median_ratio"] == pytest.approx(1.5)
+    assert qwen_row["flagged_for_review"] is True

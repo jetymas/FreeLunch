@@ -11,7 +11,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 5
+DEFAULT_LOW_PRIORITY_LOG_QUEUE_SIZE = 5000
+HIGH_PRIORITY_QUEUE_RESERVE = 256
 
 
 def utc_now_iso() -> str:
@@ -75,9 +77,13 @@ def _create_base_schema(conn: sqlite3.Connection) -> None:
             request_source TEXT NOT NULL DEFAULT 'client',
             selected_model_id TEXT NOT NULL,
             provider_id TEXT NOT NULL,
+            selected_provider_model_id TEXT DEFAULT NULL,
+            selected_tokenizer_family TEXT DEFAULT NULL,
             client_requested_model TEXT DEFAULT NULL,
             attempt_index INTEGER DEFAULT 0,
             was_fallback INTEGER DEFAULT 0,
+            estimated_prompt_tokens INTEGER DEFAULT NULL,
+            selected_context_window INTEGER DEFAULT NULL,
             prompt_tokens INTEGER DEFAULT NULL,
             completion_tokens INTEGER DEFAULT NULL,
             total_tokens INTEGER DEFAULT NULL,
@@ -154,10 +160,57 @@ def migrate_to_v3(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_sql: str,
+) -> None:
+    columns = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name in columns:
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+
+def migrate_to_v4(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "request_log",
+        "selected_provider_model_id",
+        "selected_provider_model_id TEXT DEFAULT NULL",
+    )
+    _add_column_if_missing(
+        conn,
+        "request_log",
+        "selected_tokenizer_family",
+        "selected_tokenizer_family TEXT DEFAULT NULL",
+    )
+    _add_column_if_missing(
+        conn,
+        "request_log",
+        "estimated_prompt_tokens",
+        "estimated_prompt_tokens INTEGER DEFAULT NULL",
+    )
+
+
+def migrate_to_v5(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "request_log",
+        "selected_context_window",
+        "selected_context_window INTEGER DEFAULT NULL",
+    )
+
+
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, migrate_to_v1),
     (2, migrate_to_v2),
     (3, migrate_to_v3),
+    (4, migrate_to_v4),
+    (5, migrate_to_v5),
 ]
 
 
@@ -165,13 +218,28 @@ MIGRATIONS: list[tuple[int, Any]] = [
 class WriteTask:
     sql: str
     params: tuple[Any, ...]
+    is_low_priority_log: bool = False
 
 
 class DBWriter:
-    def __init__(self, db_path: str, *, busy_timeout_ms: int = 5000) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        busy_timeout_ms: int = 5000,
+        low_priority_log_enabled: bool = True,
+        low_priority_log_queue_size: int = DEFAULT_LOW_PRIORITY_LOG_QUEUE_SIZE,
+    ) -> None:
         self.db_path = db_path
         self.busy_timeout_ms = busy_timeout_ms
-        self._queue: queue.Queue[WriteTask | None] = queue.Queue()
+        self._low_priority_log_enabled = low_priority_log_enabled
+        self._low_priority_log_queue_size = max(int(low_priority_log_queue_size), 1)
+        self._pending_low_priority_logs = 0
+        self._dropped_low_priority_logs = 0
+        self._lock = threading.Lock()
+        self._queue: queue.Queue[WriteTask | None] = queue.Queue(
+            maxsize=self._low_priority_log_queue_size + HIGH_PRIORITY_QUEUE_RESERVE
+        )
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started = False
 
@@ -187,8 +255,43 @@ class DBWriter:
         self._queue.put(None)
         self._thread.join(timeout=2)
 
-    def enqueue(self, sql: str, params: tuple[Any, ...] = ()) -> None:
-        self._queue.put(WriteTask(sql=sql, params=params))
+    def set_low_priority_log_policy(self, *, enabled: bool, queue_size: int) -> None:
+        with self._lock:
+            self._low_priority_log_enabled = enabled
+            self._low_priority_log_queue_size = max(int(queue_size), 1)
+
+    def enqueue(
+        self,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        is_low_priority_log: bool = False,
+    ) -> bool:
+        task = WriteTask(
+            sql=sql,
+            params=params,
+            is_low_priority_log=is_low_priority_log,
+        )
+        if is_low_priority_log:
+            with self._lock:
+                if not self._low_priority_log_enabled:
+                    self._dropped_low_priority_logs += 1
+                    return False
+                if self._pending_low_priority_logs >= self._low_priority_log_queue_size:
+                    self._dropped_low_priority_logs += 1
+                    return False
+                self._pending_low_priority_logs += 1
+            try:
+                self._queue.put_nowait(task)
+                return True
+            except queue.Full:
+                with self._lock:
+                    self._pending_low_priority_logs = max(self._pending_low_priority_logs - 1, 0)
+                    self._dropped_low_priority_logs += 1
+                return False
+
+        self._queue.put(task)
+        return True
 
     def _run(self) -> None:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -200,9 +303,17 @@ class DBWriter:
             if task is None:
                 self._queue.task_done()
                 break
-            conn.execute(task.sql, task.params)
-            conn.commit()
-            self._queue.task_done()
+            try:
+                conn.execute(task.sql, task.params)
+                conn.commit()
+            finally:
+                if task.is_low_priority_log:
+                    with self._lock:
+                        self._pending_low_priority_logs = max(
+                            self._pending_low_priority_logs - 1,
+                            0,
+                        )
+                self._queue.task_done()
         conn.close()
 
     def flush(self) -> None:
@@ -211,13 +322,32 @@ class DBWriter:
     def queue_depth(self) -> int:
         return self._queue.qsize()
 
+    def queue_capacity(self) -> int:
+        return self._queue.maxsize
+
+    def dropped_low_priority_logs(self) -> int:
+        with self._lock:
+            return self._dropped_low_priority_logs
+
 
 class Database:
-    def __init__(self, db_path: str, *, busy_timeout_ms: int = 5000) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        busy_timeout_ms: int = 5000,
+        request_log_enabled: bool = True,
+        request_log_queue_size: int = 5000,
+    ) -> None:
         self.db_path = db_path
         self.busy_timeout_ms = busy_timeout_ms
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.writer = DBWriter(db_path, busy_timeout_ms=busy_timeout_ms)
+        self.writer = DBWriter(
+            db_path,
+            busy_timeout_ms=busy_timeout_ms,
+            low_priority_log_enabled=request_log_enabled,
+            low_priority_log_queue_size=request_log_queue_size,
+        )
 
     def _connect(self, *, check_same_thread: bool = True) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, check_same_thread=check_same_thread)
@@ -289,6 +419,12 @@ class Database:
     def delete_override(self, key: str) -> None:
         self.writer.enqueue("DELETE FROM config_overrides WHERE key=?", (key,))
 
+    def configure_logging(self, *, request_log_enabled: bool, request_log_queue_size: int) -> None:
+        self.writer.set_low_priority_log_policy(
+            enabled=request_log_enabled,
+            queue_size=request_log_queue_size,
+        )
+
     def set_model_active(self, model_id: str, *, is_active: bool) -> None:
         self.writer.enqueue(
             "UPDATE models SET is_active=? WHERE id=?",
@@ -308,25 +444,32 @@ class Database:
             params = (provider_id,)
         self.writer.enqueue(sql, tuple(params))
 
-    def log_request(self, entry: dict[str, Any]) -> None:
-        self.writer.enqueue(
+    def log_request(self, entry: dict[str, Any]) -> bool:
+        request_source = str(entry.get("request_source", "client"))
+        return self.writer.enqueue(
             """
             INSERT INTO request_log(
                 request_id, timestamp, request_source, selected_model_id, provider_id,
-                client_requested_model, attempt_index, was_fallback, prompt_tokens,
+                selected_provider_model_id, selected_tokenizer_family, client_requested_model,
+                attempt_index, was_fallback, estimated_prompt_tokens, selected_context_window,
+                prompt_tokens,
                 completion_tokens, total_tokens, latency_ms, ttfb_ms, success,
                 gateway_error_category, error_code, error_message, was_streaming, had_tools, had_vision
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.get("request_id"),
                 entry.get("timestamp", utc_now_iso()),
-                entry.get("request_source", "client"),
+                request_source,
                 entry["selected_model_id"],
                 entry["provider_id"],
+                entry.get("selected_provider_model_id"),
+                entry.get("selected_tokenizer_family"),
                 entry.get("client_requested_model"),
                 int(entry.get("attempt_index", 0) or 0),
                 1 if entry.get("was_fallback") else 0,
+                entry.get("estimated_prompt_tokens"),
+                entry.get("selected_context_window"),
                 entry.get("prompt_tokens"),
                 entry.get("completion_tokens"),
                 entry.get("total_tokens"),
@@ -340,7 +483,20 @@ class Database:
                 1 if entry.get("had_tools") else 0,
                 1 if entry.get("had_vision") else 0,
             ),
+            is_low_priority_log=request_source == "client",
         )
+
+    def get_model_tokenization_metadata(self, model_id: str) -> sqlite3.Row | None:
+        with self.read_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT provider_model_id, tokenizer_family, context_window
+                FROM models
+                WHERE id=?
+                """,
+                (model_id,),
+            ).fetchone()
+        return cast(sqlite3.Row | None, row)
 
     def upsert_leaderboard_cache(
         self,

@@ -25,6 +25,105 @@ jobs:
       - name: Mypy
         run: mypy src
 
+  validate-installers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check shell syntax
+        run: sh -n install.sh && sh -n uninstall.sh
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: "."
+          pattern: "*.sh"
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $parseErrors = @()
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "${{ github.workspace }}/install.ps1",
+            [ref]$null,
+            [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors
+            exit 1
+          }
+      - name: Prepare fake docker shim
+        run: |
+          mkdir -p "$RUNNER_TEMP/installer-bin"
+          cat > "$RUNNER_TEMP/installer-bin/docker" <<'EOF'
+          #!/usr/bin/env sh
+          set -eu
+          case "${1:-}" in
+            info)
+              exit 0
+              ;;
+            pull)
+              exit 0
+              ;;
+            compose)
+              case "${2:-}" in
+                version|up|down)
+                  exit 0
+                  ;;
+              esac
+              ;;
+          esac
+          printf 'unexpected docker invocation: %s\n' "$*" >&2
+          exit 1
+          EOF
+          chmod +x "$RUNNER_TEMP/installer-bin/docker"
+          echo "$RUNNER_TEMP/installer-bin" >> "$GITHUB_PATH"
+      - name: Smoke test shell installer
+        env:
+          HOME: ${{ runner.temp }}/home-sh
+          FREELUNCH_INSTALL_DIR: ${{ runner.temp }}/home-sh/.freelunch
+          OPENROUTER_API_KEY: test-openrouter-key
+          GATEWAY_API_KEY: ""
+          FREELUNCH_PORT: "18000"
+          FREELUNCH_AUTO_CONFIRM: "yes"
+        run: |
+          mkdir -p "$HOME"
+          sh ./install.sh
+          test -f "$FREELUNCH_INSTALL_DIR/.env"
+          test -f "$FREELUNCH_INSTALL_DIR/config.yaml"
+          test -f "$FREELUNCH_INSTALL_DIR/docker-compose.yml"
+          grep -q '^OPENROUTER_API_KEY=test-openrouter-key$' "$FREELUNCH_INSTALL_DIR/.env"
+          grep -q '^FREELUNCH_PORT=18000$' "$FREELUNCH_INSTALL_DIR/.env"
+          sh ./uninstall.sh
+          test ! -d "$FREELUNCH_INSTALL_DIR"
+      - name: Smoke test PowerShell installer
+        shell: pwsh
+        env:
+          USERPROFILE: ${{ runner.temp }}/home-ps
+          FREELUNCH_INSTALL_DIR: ${{ runner.temp }}/home-ps/.freelunch
+          OPENROUTER_API_KEY: test-openrouter-key-ps
+          GATEWAY_API_KEY: ""
+          FREELUNCH_PORT: "19000"
+          FREELUNCH_AUTO_CONFIRM: "yes"
+        run: |
+          New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+          ./install.ps1
+          if (-not (Test-Path "$env:FREELUNCH_INSTALL_DIR/.env")) { throw "missing .env" }
+          if (-not (Test-Path "$env:FREELUNCH_INSTALL_DIR/config.yaml")) { throw "missing config.yaml" }
+          if (-not (Test-Path "$env:FREELUNCH_INSTALL_DIR/docker-compose.yml")) { throw "missing docker-compose.yml" }
+          $envContent = Get-Content "$env:FREELUNCH_INSTALL_DIR/.env" -Raw
+          if ($envContent -notmatch "OPENROUTER_API_KEY=test-openrouter-key-ps") { throw "missing OpenRouter key" }
+          if ($envContent -notmatch "FREELUNCH_PORT=19000") { throw "missing port" }
+          ./uninstall.ps1
+          if (Test-Path $env:FREELUNCH_INSTALL_DIR) { throw "install dir still exists after uninstall" }
+          $parseErrors = @()
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "${{ github.workspace }}/uninstall.ps1",
+            [ref]$null,
+            [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors
+            exit 1
+          }
+
   test:
     runs-on: ubuntu-latest
     strategy:

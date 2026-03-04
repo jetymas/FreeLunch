@@ -30,6 +30,8 @@ class Settings:
         "health.max_backoff_exponent",
         "health.probe_max_tokens",
         "health.daily_request_budget_by_provider.openrouter",
+        "logging.runtime_enabled",
+        "logging.runtime_verbosity",
         "logging.request_log_retention_days",
     }
     DEFAULT_RANKING_WEIGHTS: ClassVar[dict[str, float]] = {
@@ -50,6 +52,11 @@ class Settings:
     database_url: str = "freelunch.db"
     database_busy_timeout_ms: int = 5000
     app_env: str = "dev"
+    providers_enabled: tuple[str, ...] = ("openrouter",)
+    openrouter_enabled: bool = True
+    openrouter_discovery_enabled: bool = True
+    openrouter_inference_enabled: bool = True
+    openrouter_dev_stub_enabled: bool = False
     discovery_interval_minutes: int = 30
     discovery_request_timeout_seconds: int = 15
     discovery_leaderboard_chatbot_arena_enabled: bool = True
@@ -82,6 +89,9 @@ class Settings:
     logging_request_log_enabled: bool = True
     logging_log_queue_size: int = 5000
     logging_request_log_retention_days: int = 30
+    logging_runtime_enabled: bool = True
+    logging_runtime_verbosity: str = "concise"
+    logging_runtime_queue_size: int = 1000
 
     @classmethod
     def from_env(cls, config_path: str = "config.yaml") -> Settings:
@@ -106,6 +116,11 @@ class Settings:
         database = config_data.get("database", {})
         providers = config_data.get("providers", {})
         openrouter = providers.get("openrouter", {}) if isinstance(providers, dict) else {}
+        enabled_providers = cls._coerce_string_list(
+            providers.get("enabled", ["openrouter"]) if isinstance(providers, dict) else ["openrouter"]
+        )
+        openrouter_globally_enabled = "openrouter" in enabled_providers
+        openrouter_enabled = openrouter_globally_enabled and bool(openrouter.get("enabled", True))
         ranking_weights = dict(cls.DEFAULT_RANKING_WEIGHTS)
         ranking_weights.update(cls._coerce_float_mapping(ranking.get("weights", {})))
         probe_budgets = {"openrouter": 5}
@@ -123,6 +138,16 @@ class Settings:
             database_url=os.getenv("DATABASE_URL", database.get("path", "freelunch.db")),
             database_busy_timeout_ms=max(int(database.get("busy_timeout_ms", 5000)), 1),
             app_env=os.getenv("APP_ENV", "dev"),
+            providers_enabled=tuple(enabled_providers),
+            openrouter_enabled=openrouter_enabled,
+            openrouter_discovery_enabled=openrouter_enabled
+            and bool(openrouter.get("discovery_enabled", True)),
+            openrouter_inference_enabled=openrouter_enabled
+            and bool(openrouter.get("inference_enabled", True)),
+            openrouter_dev_stub_enabled=cls._env_bool(
+                "OPENROUTER_DEV_STUB_ENABLED",
+                openrouter.get("dev_stub_enabled", False),
+            ),
             discovery_interval_minutes=max(int(discovery.get("interval_minutes", 30)), 1),
             discovery_request_timeout_seconds=max(
                 int(discovery.get("request_timeout_seconds", 15)),
@@ -181,6 +206,9 @@ class Settings:
                 int(logging.get("request_log_retention_days", 30)),
                 1,
             ),
+            logging_runtime_enabled=bool(logging.get("runtime_enabled", True)),
+            logging_runtime_verbosity=str(logging.get("runtime_verbosity", "concise")),
+            logging_runtime_queue_size=max(int(logging.get("runtime_queue_size", 1000)), 1),
         )
 
     def apply_overrides(self, overrides: dict[str, Any]) -> None:
@@ -239,6 +267,10 @@ class Settings:
                 int(overrides["logging.request_log_retention_days"]),
                 1,
             )
+        if "logging.runtime_enabled" in overrides:
+            self.logging_runtime_enabled = bool(overrides["logging.runtime_enabled"])
+        if "logging.runtime_verbosity" in overrides:
+            self.logging_runtime_verbosity = str(overrides["logging.runtime_verbosity"])
         for key in self.DEFAULT_RANKING_WEIGHTS:
             override_key = f"ranking.weights.{key}"
             if override_key in overrides:
@@ -260,6 +292,12 @@ class Settings:
             return {}
         return {str(key): int(raw) for key, raw in value.items()}
 
+    @classmethod
+    def _coerce_string_list(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if str(item).strip()]
+
     @staticmethod
     def _env_bool(name: str, default: Any) -> bool:
         raw = os.getenv(name)
@@ -279,6 +317,11 @@ class Settings:
             "gateway.log_level": self.gateway_log_level,
             "database.path": self.database_url,
             "database.busy_timeout_ms": self.database_busy_timeout_ms,
+            "providers.enabled": list(self.providers_enabled),
+            "providers.openrouter.enabled": self.openrouter_enabled,
+            "providers.openrouter.discovery_enabled": self.openrouter_discovery_enabled,
+            "providers.openrouter.inference_enabled": self.openrouter_inference_enabled,
+            "providers.openrouter.dev_stub_enabled": self.openrouter_dev_stub_enabled,
             "discovery.interval_minutes": self.discovery_interval_minutes,
             "discovery.request_timeout_seconds": self.discovery_request_timeout_seconds,
             "discovery.leaderboard.chatbot_arena.enabled": self.discovery_leaderboard_chatbot_arena_enabled,
@@ -308,4 +351,7 @@ class Settings:
             "logging.request_log_enabled": self.logging_request_log_enabled,
             "logging.log_queue_size": self.logging_log_queue_size,
             "logging.request_log_retention_days": self.logging_request_log_retention_days,
+            "logging.runtime_enabled": self.logging_runtime_enabled,
+            "logging.runtime_verbosity": self.logging_runtime_verbosity,
+            "logging.runtime_queue_size": self.logging_runtime_queue_size,
         }

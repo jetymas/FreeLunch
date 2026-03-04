@@ -11,12 +11,69 @@ from src.config import Settings
 from src.db import Database
 from src.providers.registry import ProviderRegistry
 from src.proxy import build_router
+from src.runtime_logging import (
+    configure_runtime_logging,
+    get_logger,
+    runtime_log,
+    shutdown_runtime_logging,
+)
 from src.scheduler import build_scheduler, register_jobs, run_discovery_pipeline
+from src.tokens import shutdown_tokenizer_preloads
+
+logger = get_logger(__name__)
+
+
+def _openrouter_dev_stub_enabled(settings: Settings) -> bool:
+    return settings.app_env == "dev" and settings.openrouter_dev_stub_enabled
+
+
+def _openrouter_runtime_enabled(settings: Settings) -> bool:
+    return settings.openrouter_inference_enabled and (
+        bool(settings.openrouter_api_key) or _openrouter_dev_stub_enabled(settings)
+    )
+
+
+def _configure_registry(settings: Settings, registry: ProviderRegistry) -> None:
+    dev_stub_enabled = _openrouter_dev_stub_enabled(settings)
+    discovery_enabled = settings.openrouter_discovery_enabled and (
+        bool(settings.openrouter_api_key) or dev_stub_enabled
+    )
+    registry.register_openrouter(
+        api_key=settings.openrouter_api_key,
+        api_base=settings.openrouter_api_base,
+        dev_stub_enabled=dev_stub_enabled,
+        discovery_enabled=discovery_enabled,
+        inference_enabled=_openrouter_runtime_enabled(settings),
+    )
+
+
+def _configure_database_logging(settings: Settings, db: Database) -> None:
+    db.configure_logging(
+        request_log_enabled=settings.logging_request_log_enabled,
+        request_log_queue_size=settings.logging_log_queue_size,
+    )
+
+
+def _configure_runtime_logger(settings: Settings) -> None:
+    configure_runtime_logging(
+        enabled=settings.logging_runtime_enabled,
+        verbosity=settings.logging_runtime_verbosity,
+        queue_size=settings.logging_runtime_queue_size,
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.from_env()
+    _configure_runtime_logger(settings)
+    runtime_log(
+        logger,
+        "app.starting",
+        verbosity="concise",
+        message="Starting FreeLunch application",
+        app_env=settings.app_env,
+        runtime_log_verbosity=settings.logging_runtime_verbosity,
+    )
     db = Database(
         settings.database_url,
         busy_timeout_ms=settings.database_busy_timeout_ms,
@@ -25,11 +82,10 @@ async def lifespan(app: FastAPI):
     db.writer.start()
 
     settings.apply_overrides(db.get_overrides())
+    _configure_database_logging(settings, db)
 
     registry = ProviderRegistry()
-    registry.register_openrouter(
-        api_key=settings.openrouter_api_key, api_base=settings.openrouter_api_base
-    )
+    _configure_registry(settings, registry)
 
     app.state.db = db
     app.state.registry = registry
@@ -41,14 +97,31 @@ async def lifespan(app: FastAPI):
     app.state.job_status = {}
     app.state.discovery_lock = asyncio.Lock()
 
+    def apply_provider_runtime_state(current_settings: Settings) -> None:
+        if not _openrouter_runtime_enabled(current_settings):
+            db.writer.enqueue(
+                "UPDATE models SET is_active=0 WHERE provider_id='openrouter'",
+            )
+            db.writer.flush()
+            runtime_log(
+                logger,
+                "provider.runtime_disabled",
+                verbosity="concise",
+                message="OpenRouter models deactivated because runtime inference is unavailable",
+                provider_id="openrouter",
+                inference_enabled=current_settings.openrouter_inference_enabled,
+                has_api_key=bool(current_settings.openrouter_api_key),
+                dev_stub_enabled=_openrouter_dev_stub_enabled(current_settings),
+            )
+
     def reload_settings() -> Settings:
         new_settings = Settings.from_env()
         new_settings.apply_overrides(db.get_overrides())
-        registry.register_openrouter(
-            api_key=new_settings.openrouter_api_key,
-            api_base=new_settings.openrouter_api_base,
-        )
+        _configure_runtime_logger(new_settings)
+        _configure_registry(new_settings, registry)
+        _configure_database_logging(new_settings, db)
         app.state.settings = new_settings
+        apply_provider_runtime_state(new_settings)
         discovery_job = app.state.scheduler.get_job("discovery")
         if discovery_job is not None:
             app.state.scheduler.reschedule_job(
@@ -67,24 +140,58 @@ async def lifespan(app: FastAPI):
                 "health",
                 trigger=IntervalTrigger(minutes=new_settings.health_probe_interval_minutes),
             )
+        app.state.recompute_readiness()
+        runtime_log(
+            logger,
+            "config.reloaded",
+            verbosity="verbose",
+            message="Reloaded runtime settings",
+            discovery_interval_minutes=new_settings.discovery_interval_minutes,
+            ranking_interval_minutes=new_settings.ranking_interval_minutes,
+            health_interval_minutes=new_settings.health_probe_interval_minutes,
+            runtime_log_verbosity=new_settings.logging_runtime_verbosity,
+        )
         return new_settings
 
     def recompute_readiness() -> bool:
+        apply_provider_runtime_state(app.state.settings)
+        previous_ready = bool(getattr(app.state, "ready", False))
         with db.read_conn() as conn:
             routable_count = conn.execute(
                 "SELECT COUNT(*) FROM models WHERE is_healthy=1 AND is_active=1"
             ).fetchone()[0]
         app.state.ready = routable_count > 0
+        if bool(app.state.ready) != previous_ready:
+            runtime_log(
+                logger,
+                "readiness.changed",
+                verbosity="concise",
+                message="Gateway readiness changed",
+                ready=bool(app.state.ready),
+                routable_count=int(routable_count or 0),
+            )
         return bool(app.state.ready)
 
     app.state.recompute_readiness = recompute_readiness
     app.state.reload_settings = reload_settings
+    apply_provider_runtime_state(settings)
 
-    await run_discovery_pipeline(
+    startup_outcome = await run_discovery_pipeline(
         db,
         registry,
         settings=settings,
         recompute_readiness=recompute_readiness,
+    )
+    recompute_readiness()
+    runtime_log(
+        logger,
+        "app.started",
+        verbosity="concise",
+        message="FreeLunch startup completed",
+        ready=bool(app.state.ready),
+        discovered=startup_outcome.get("discovered"),
+        ranking_updates=startup_outcome.get("ranking_updates"),
+        probed_models=startup_outcome.get("probed_models"),
     )
 
     register_jobs(app.state.scheduler, db, registry, app.state)
@@ -92,8 +199,22 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        runtime_log(
+            logger,
+            "app.stopping",
+            verbosity="concise",
+            message="Stopping FreeLunch application",
+        )
         app.state.scheduler.shutdown(wait=False)
         db.writer.stop()
+        shutdown_tokenizer_preloads()
+        runtime_log(
+            logger,
+            "app.stopped",
+            verbosity="concise",
+            message="FreeLunch application stopped",
+        )
+        shutdown_runtime_logging()
 
 
 app = FastAPI(title="FreeLunch", version="0.2.0", lifespan=lifespan)

@@ -120,6 +120,7 @@ def _filter_candidates_by_tokenizer_estimate(
                 response_format=req.token_estimation_response_format,
                 safety_buffer=req.token_estimation_safety_buffer,
                 tokenizer_family=str(candidate.get("tokenizer_family") or ""),
+                model_hint=str(candidate.get("provider_model_id") or ""),
             ),
         )
         if int(candidate["context_window"] or 0) >= required_tokens:

@@ -73,6 +73,50 @@ def test_chat_completions_auto(client, monkeypatch):
     assert body["choices"][0]["message"]["content"] == "Echo: hi"
 
 
+def test_success_logs_token_estimation_observability_fields(client, monkeypatch):
+    _update_model(
+        client,
+        "openrouter/openrouter/free",
+        tokenizer_family="cl100k_base",
+    )
+
+    async def fake_chat(self, request_body, model):
+        return ChatResult(
+            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []},
+            prompt_tokens=48,
+            completion_tokens=8,
+            total_tokens=56,
+            ttfb_ms=10,
+        )
+
+    monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "Count these tokens."}]},
+    )
+    assert response.status_code == 200
+
+    db = client.app.state.db
+    db.writer.flush()
+    with db.read_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT selected_provider_model_id, selected_tokenizer_family,
+                   estimated_prompt_tokens, prompt_tokens
+            FROM request_log
+            WHERE request_source='client'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert row["selected_provider_model_id"] == "openrouter/free"
+    assert row["selected_tokenizer_family"] == "cl100k_base"
+    assert int(row["estimated_prompt_tokens"] or 0) > 0
+    assert row["prompt_tokens"] == 48
+
+
 def test_chat_completions_returns_503_after_retryable_failures(client, monkeypatch):
     async def fail_chat(self, request_body, model):
         raise ProviderRetryableError("temporary provider outage")
@@ -278,11 +322,63 @@ def test_tokenizer_family_estimation_routes_away_from_tighter_tokenizers(client,
         "/v1/chat/completions",
         json={
             "model": "auto",
-            "messages": [{"role": "user", "content": "x" * 1100}],
+            "messages": [{"role": "user", "content": "x" * 1900}],
         },
     )
     assert response.status_code == 200
     assert response.json()["model"] == "model-roomy-tokenizer"
+
+
+def test_structured_message_metadata_counts_toward_context_requirements(client, monkeypatch):
+    _insert_backup_model(
+        client,
+        model_id="openrouter/model-metadata-room",
+        provider_model_id="model-metadata-room",
+    )
+    _update_model(
+        client,
+        "openrouter/openrouter/free",
+        composite_score=80.0,
+        context_window=120,
+    )
+    _update_model(
+        client,
+        "openrouter/model-metadata-room",
+        composite_score=60.0,
+        context_window=4096,
+    )
+
+    async def fake_chat(self, request_body, model):
+        return ChatResult(
+            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []}
+        )
+
+    monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "messages": [
+                {"role": "user", "content": "Use a tool."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": '{"query":"' + ("widgets-" * 40) + '"}',
+                            },
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["model"] == "model-metadata-room"
 
 
 def test_structured_multimodal_requests_require_vision_models(client, monkeypatch):
@@ -359,6 +455,12 @@ def test_max_completion_tokens_filters_models_by_output_limit(client, monkeypatc
 
 
 def test_context_exceeded_returns_400_without_penalizing_model_health(client, monkeypatch):
+    _update_model(
+        client,
+        "openrouter/openrouter/free",
+        tokenizer_family="llama3",
+    )
+
     async def fail_chat(self, request_body, model):
         raise ProviderRetryableError("too many tokens", category="CONTEXT_EXCEEDED")
 
@@ -375,7 +477,22 @@ def test_context_exceeded_returns_400_without_penalizing_model_health(client, mo
         row = conn.execute(
             "SELECT consecutive_failures, is_healthy FROM models WHERE id='openrouter/openrouter/free'"
         ).fetchone()
+        log_row = conn.execute(
+            """
+            SELECT selected_provider_model_id, selected_tokenizer_family,
+                   estimated_prompt_tokens, gateway_error_category
+            FROM request_log
+            WHERE request_source='client'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
 
     assert row is not None
     assert row["consecutive_failures"] == 0
     assert row["is_healthy"] == 1
+    assert log_row is not None
+    assert log_row["selected_provider_model_id"] == "openrouter/free"
+    assert log_row["selected_tokenizer_family"] == "llama3"
+    assert int(log_row["estimated_prompt_tokens"] or 0) > 0
+    assert log_row["gateway_error_category"] == "CONTEXT_EXCEEDED"

@@ -12,3 +12,4 @@ pytest-cache-files-*/
 coverage.xml
 .coverage
 tmp*.db
+.testkey

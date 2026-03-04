@@ -1,8 +1,25 @@
 app:
   env: dev
 
+gateway:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  log_level: "info"
+
+database:
+  path: "freelunch.db"
+  busy_timeout_ms: 5000
+
 providers:
+  enabled:
+    - openrouter
+
   openrouter:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    dev_stub_enabled: false   # Dev-only no-key stub. Ignored outside APP_ENV=dev.
     api_base: "https://openrouter.ai/api/v1"
     active_probe_enabled: true
 
@@ -20,6 +37,7 @@ discovery:
 routing:
   default_model: auto
   max_attempts: 3
+  enable_request_preference_headers: true
 
 ranking:
   interval_minutes: 15
@@ -48,4 +66,11 @@ health:
     openrouter: 5
 
 logging:
+  runtime_enabled: true       # Queue-backed JSON runtime logs emitted on a separate listener thread.
+  runtime_verbosity: concise  # concise | verbose | debug
+  runtime_queue_size: 1000    # Low-priority runtime records drop before request handling stalls.
+  request_log_enabled: true
+  log_queue_size: 5000        # Low-priority client logs are lossy under saturation.
   request_log_retention_days: 30
+  # Runtime logs are ephemeral process output.
+  # SQLite request telemetry is separate and powers health, ranking, and token-estimation review.

@@ -4,6 +4,10 @@ from src.benchmarks import normalize_model_name, refresh_leaderboard_cache
 from src.config import Settings
 from src.db import Database, utc_now_iso
 from src.providers.registry import ProviderRegistry
+from src.runtime_logging import get_logger, runtime_log
+from src.tokens import schedule_tokenizer_preload
+
+logger = get_logger(__name__)
 
 
 def _benchmark_lookup_keys(model: dict) -> list[str]:
@@ -55,12 +59,34 @@ async def run_discovery(
     discovered = 0
     now = utc_now_iso()
     if settings is not None:
-        await refresh_leaderboard_cache(db, settings)
+        benchmark_outcome = await refresh_leaderboard_cache(db, settings)
+        runtime_log(
+            logger,
+            "discovery.benchmark_refresh.completed",
+            verbosity="verbose",
+            message="Benchmark cache refresh completed",
+            **benchmark_outcome,
+        )
+    runtime_log(
+        logger,
+        "discovery.started",
+        verbosity="verbose",
+        message="Starting provider discovery",
+        provider_count=len(registry.all()),
+    )
     for provider in registry.all():
+        runtime_log(
+            logger,
+            "discovery.provider.started",
+            verbosity="debug",
+            message="Discovering provider models",
+            provider_id=provider.name,
+        )
         models = await provider.discover_models()
         seen_ids: list[str] = []
         for model in models:
             model = _apply_cached_benchmarks(db, model)
+            schedule_tokenizer_preload(str(model.get("provider_model_id", "")))
             seen_ids.append(str(model["id"]))
             db.writer.enqueue(
                 """
@@ -122,4 +148,19 @@ async def run_discovery(
             )
             discovered += 1
         db.mark_models_not_seen(provider.name, seen_ids)
+        runtime_log(
+            logger,
+            "discovery.provider.completed",
+            verbosity="verbose",
+            message="Provider discovery completed",
+            provider_id=provider.name,
+            discovered_models=len(models),
+        )
+    runtime_log(
+        logger,
+        "discovery.completed",
+        verbosity="verbose",
+        message="Provider discovery completed",
+        discovered=discovered,
+    )
     return discovered

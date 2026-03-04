@@ -19,6 +19,9 @@ logging:
   request_log_enabled: false
   log_queue_size: 1234
   request_log_retention_days: 14
+  runtime_enabled: true
+  runtime_verbosity: debug
+  runtime_queue_size: 321
 
 database:
   path: "custom.db"
@@ -38,6 +41,9 @@ database:
     assert settings.logging_request_log_enabled is False
     assert settings.logging_log_queue_size == 1234
     assert settings.logging_request_log_retention_days == 14
+    assert settings.logging_runtime_enabled is True
+    assert settings.logging_runtime_verbosity == "debug"
+    assert settings.logging_runtime_queue_size == 321
     assert settings.public_settings()["database.busy_timeout_ms"] == 3210
 
 
