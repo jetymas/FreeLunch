@@ -166,10 +166,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Prepare smoke config
+        run: |
+          cat > "$RUNNER_TEMP/smoke-config.yaml" <<'EOF'
+          discovery:
+            leaderboard:
+              chatbot_arena:
+                enabled: false
+              open_llm:
+                enabled: false
+          health:
+            startup_probe_limit: 0
+          providers:
+            openrouter:
+              active_probe_enabled: false
+          EOF
       - name: Build image
         run: docker build -t freelunch:test .
       - name: Run smoke container
-        run: docker run -d --rm --name freelunch-smoke -p 8000:8000 -e APP_ENV=dev -e OPENROUTER_DEV_STUB_ENABLED=true freelunch:test
+        run: docker run -d --rm --name freelunch-smoke -p 8000:8000 -e APP_ENV=dev -e OPENROUTER_DEV_STUB_ENABLED=true -e STARTUP_PROBE_LIMIT=0 -v "$RUNNER_TEMP/smoke-config.yaml:/app/config.yaml:ro" freelunch:test
       - name: Smoke test healthz
         run: |
           python - <<'PY'
