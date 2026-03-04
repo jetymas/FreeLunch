@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from src.providers.base import ProviderRetryableError, StreamResult
 from src.providers.openrouter import OpenRouterAdapter
 
@@ -76,7 +78,7 @@ def test_chat_completion_streaming_fails_over_before_first_event(client, monkeyp
     _insert_backup_model(client)
 
     async def fail_then_stream(self, request_body, model):
-        if model == "openrouter/auto":
+        if model == "openrouter/free":
             raise ProviderRetryableError("stream setup failed", category="PROVIDER_UNAVAILABLE")
 
         async def gen():
@@ -144,12 +146,39 @@ def test_admin_endpoints(client):
     assert "db" in health_payload
     assert "models" in health_payload
     assert "scheduler" in health_payload
+    assert "probe_budgets" in health_payload
+    assert "maintenance" in health_payload["scheduler"]["jobs"]
+    assert "config_refresh" in health_payload["scheduler"]["jobs"]
 
     config_response = client.get("/admin/config")
     assert config_response.status_code == 200
     config_payload = config_response.json()
     assert "overrides" in config_payload
     assert "effective" in config_payload
+
+
+def test_admin_health_reports_probe_budget_usage(client):
+    db = client.app.state.db
+    utc_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    db.writer.enqueue(
+        """
+        INSERT INTO request_log(
+            timestamp, request_source, selected_model_id, provider_id, success
+        ) VALUES
+            (?, 'probe', 'openrouter/openrouter/free', 'openrouter', 1),
+            (?, 'bootstrap', 'openrouter/openrouter/free', 'openrouter', 1)
+        """,
+        (f"{utc_day}T00:00:00Z", f"{utc_day}T01:00:00Z"),
+    )
+    db.writer.flush()
+
+    response = client.get("/admin/health")
+    assert response.status_code == 200
+    payload = response.json()
+    budget = next(item for item in payload["probe_budgets"] if item["provider_id"] == "openrouter")
+    assert budget["limit"] == 5
+    assert budget["used"] >= 2
+    assert budget["remaining"] == budget["limit"] - budget["used"]
 
 
 def test_admin_enable_disable_model_impacts_readiness(client):
@@ -229,6 +258,29 @@ def test_admin_config_override_updates_runtime_settings(client):
     assert after_delete["effective"]["routing.max_attempts"] == 3
 
 
+def test_periodic_config_refresh_picks_up_db_overrides(client):
+    db = client.app.state.db
+    db.set_override("routing.max_attempts", 7)
+    db.writer.flush()
+
+    client.app.state.config_refresh_runner()
+
+    assert client.app.state.settings.routing_max_attempts == 7
+
+
+def test_admin_config_override_updates_log_retention_setting(client):
+    response = client.put(
+        "/admin/config/logging.request_log_retention_days",
+        json={"value": 14},
+    )
+    assert response.status_code == 200
+    assert client.app.state.settings.logging_request_log_retention_days == 14
+
+    config_response = client.get("/admin/config")
+    assert config_response.status_code == 200
+    assert config_response.json()["effective"]["logging.request_log_retention_days"] == 14
+
+
 def test_admin_config_override_reschedules_health_job(client):
     response = client.put(
         "/admin/config/health.probe_interval_minutes",
@@ -238,6 +290,28 @@ def test_admin_config_override_reschedules_health_job(client):
     job = client.app.state.scheduler.get_job("health")
     assert job is not None
     assert int(job.trigger.interval.total_seconds()) == 600
+
+
+def test_admin_config_override_reschedules_discovery_job(client):
+    response = client.put(
+        "/admin/config/discovery.interval_minutes",
+        json={"value": 45},
+    )
+    assert response.status_code == 200
+    job = client.app.state.scheduler.get_job("discovery")
+    assert job is not None
+    assert int(job.trigger.interval.total_seconds()) == 2700
+
+
+def test_admin_config_override_reschedules_ranking_job(client):
+    response = client.put(
+        "/admin/config/ranking.interval_minutes",
+        json={"value": 20},
+    )
+    assert response.status_code == 200
+    job = client.app.state.scheduler.get_job("ranking")
+    assert job is not None
+    assert int(job.trigger.interval.total_seconds()) == 1200
 
 
 def test_admin_endpoints_require_auth_when_gateway_key_is_set(client):

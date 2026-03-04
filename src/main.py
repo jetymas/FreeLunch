@@ -17,7 +17,10 @@ from src.scheduler import build_scheduler, register_jobs, run_discovery_pipeline
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.from_env()
-    db = Database(settings.database_url)
+    db = Database(
+        settings.database_url,
+        busy_timeout_ms=settings.database_busy_timeout_ms,
+    )
     db.init()
     db.writer.start()
 
@@ -46,6 +49,18 @@ async def lifespan(app: FastAPI):
             api_base=new_settings.openrouter_api_base,
         )
         app.state.settings = new_settings
+        discovery_job = app.state.scheduler.get_job("discovery")
+        if discovery_job is not None:
+            app.state.scheduler.reschedule_job(
+                "discovery",
+                trigger=IntervalTrigger(minutes=new_settings.discovery_interval_minutes),
+            )
+        ranking_job = app.state.scheduler.get_job("ranking")
+        if ranking_job is not None:
+            app.state.scheduler.reschedule_job(
+                "ranking",
+                trigger=IntervalTrigger(minutes=new_settings.ranking_interval_minutes),
+            )
         health_job = app.state.scheduler.get_job("health")
         if health_job is not None:
             app.state.scheduler.reschedule_job(

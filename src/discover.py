@@ -1,15 +1,67 @@
 from __future__ import annotations
 
+from src.benchmarks import normalize_model_name, refresh_leaderboard_cache
+from src.config import Settings
 from src.db import Database, utc_now_iso
 from src.providers.registry import ProviderRegistry
 
 
-async def run_discovery(db: Database, registry: ProviderRegistry) -> int:
+def _benchmark_lookup_keys(model: dict) -> list[str]:
+    raw_values = [
+        str(model.get("provider_model_id", "")),
+        str(model.get("name", "")),
+        str(model.get("id", "")),
+    ]
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        if not raw_value:
+            continue
+        value = raw_value.removesuffix(":free")
+        candidates = [value]
+        if "/" in value:
+            candidates.append(value.split("/")[-1])
+        for candidate in candidates:
+            normalized = normalize_model_name(candidate)
+            if normalized and normalized not in seen:
+                keys.append(normalized)
+                seen.add(normalized)
+    return keys
+
+
+def _apply_cached_benchmarks(db: Database, model: dict) -> dict:
+    enriched = dict(model)
+    if enriched.get("chatbot_arena_elo") is not None or enriched.get("open_llm_score") is not None:
+        return enriched
+
+    for key in _benchmark_lookup_keys(enriched):
+        cached = db.get_leaderboard_cache(key)
+        if cached is None:
+            continue
+        if enriched.get("chatbot_arena_elo") is None:
+            enriched["chatbot_arena_elo"] = cached["chatbot_arena_elo"]
+        if enriched.get("open_llm_score") is None:
+            enriched["open_llm_score"] = cached["open_llm_avg_score"]
+        break
+    return enriched
+
+
+async def run_discovery(
+    db: Database,
+    registry: ProviderRegistry,
+    *,
+    settings: Settings | None = None,
+) -> int:
     discovered = 0
     now = utc_now_iso()
+    if settings is not None:
+        await refresh_leaderboard_cache(db, settings)
     for provider in registry.all():
         models = await provider.discover_models()
+        seen_ids: list[str] = []
         for model in models:
+            model = _apply_cached_benchmarks(db, model)
+            seen_ids.append(str(model["id"]))
             db.writer.enqueue(
                 """
                 INSERT INTO models(
@@ -69,4 +121,5 @@ async def run_discovery(db: Database, registry: ProviderRegistry) -> int:
                 ),
             )
             discovered += 1
+        db.mark_models_not_seen(provider.name, seen_ids)
     return discovered

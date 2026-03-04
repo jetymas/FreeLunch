@@ -122,6 +122,15 @@ GATEWAY_API_KEY=
 docker compose up -d
 ```
 
+For a local non-Docker run:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+uvicorn src.main:app --host 0.0.0.0 --port 8000
+```
+
 ### 4. Verify liveness and readiness
 
 ```bash
@@ -159,6 +168,36 @@ In most cases, integration is just:
 - set the base URL to your gateway
 - set the model to `auto`
 - optionally provide your gateway API key
+
+### Python OpenAI SDK
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="your-gateway-key-or-any-placeholder-if-disabled",
+)
+
+response = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Summarize why failover matters."}],
+)
+
+print(response.choices[0].message.content)
+```
+
+### Open WebUI / OpenClaw / Kilo Code
+
+Use these values:
+- Base URL: `http://<gateway-host>:8000/v1`
+- API key: your `GATEWAY_API_KEY` if gateway auth is enabled; otherwise any non-empty placeholder if the client insists on one
+- Model: `auto`
+
+If a client supports custom headers, you can also pass:
+- `X-Gateway-Preference: latency`
+- `X-Gateway-Max-Latency-Ms: 500`
+- `X-Gateway-Min-Context: 32000`
 
 ---
 
@@ -247,6 +286,17 @@ providers:
     free_only: true
     fallback_model: "openrouter/openrouter/free"
 
+discovery:
+  interval_minutes: 30
+  request_timeout_seconds: 15
+  leaderboard:
+    chatbot_arena:
+      enabled: true
+      cache_hours: 24
+    open_llm:
+      enabled: true
+      cache_hours: 24
+
 routing:
   max_attempts: 3
 
@@ -264,10 +314,12 @@ ranking:
 
 ```text
 src/
+├── benchmarks.py
 ├── config.py
 ├── db.py
 ├── discover.py
 ├── health.py
+├── main.py
 ├── proxy.py
 ├── ranking.py
 ├── routing.py
@@ -290,6 +342,13 @@ That means:
 - the first shipping implementation stays intentionally narrow
 - correctness and operational simplicity take priority over broad provider coverage
 
+### Tracking documents
+
+- `FREELUNCH_SPEC_v8.md` is the authoritative product spec.
+- `SPEC_GAP_REVIEW.md` captures current implementation-vs-spec gaps.
+- `TASKS.md` is the actionable backlog derived from the latest review.
+- `AGENTS.md` gives repo-specific guidance for coding agents and maintainers.
+
 ---
 
 ## Roadmap
@@ -311,6 +370,33 @@ This project deliberately favors:
 - **predictable failure behavior** over aggressive probing or optimistic assumptions
 - **small, composable modules** over tightly coupled orchestration
 - **single-node reliability** before horizontal complexity
+
+## Development
+
+Common validation commands:
+
+```bash
+python -m ruff check .
+python -m mypy src
+python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
+python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
+```
+
+Common local workflows:
+
+```bash
+# Run the API locally
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+
+# Run a focused test file
+python -m pytest tests/test_api.py -q --basetemp .pytest_tmp_api -p no:cacheprovider
+
+# Exercise the OpenAI-compatible endpoint manually
+curl http://localhost:8000/v1/models
+curl http://localhost:8000/admin/health
+```
+
+The repo intentionally excludes local vendored dependency folders such as `.pydeps` from linting so repo-wide commands stay focused on project code.
 
 ---
 

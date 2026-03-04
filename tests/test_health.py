@@ -4,7 +4,13 @@ import pytest
 
 from src.config import Settings
 from src.db import Database, utc_now_iso
-from src.health import get_provider_probe_usage, mark_failure, mark_success, run_health_checks
+from src.health import (
+    ROLLING_METRIC_ALPHA,
+    get_provider_probe_usage,
+    mark_failure,
+    mark_success,
+    run_health_checks,
+)
 from src.providers.base import ChatResult
 from src.providers.registry import ProviderRegistry
 
@@ -69,6 +75,31 @@ def test_mark_success_clears_backoff_state(tmp_path):
     assert row[1] == 0
     assert row[2] is None
     assert row[3] == 1
+
+
+def test_mark_success_uses_rolling_latency_and_ttfb(tmp_path):
+    db = Database(str(tmp_path / "health-rolling.db"))
+    db.init()
+    db.writer.start()
+    _insert_model(db, "model-a")
+    db.writer.enqueue(
+        "UPDATE models SET avg_latency_ms=100.0, avg_ttfb_ms=50.0 WHERE id='model-a'"
+    )
+    db.writer.flush()
+
+    mark_success(db, "model-a", latency_ms=220.0, ttfb_ms=110.0)
+    db.writer.flush()
+
+    with db.read_conn() as conn:
+        row = conn.execute(
+            "SELECT avg_latency_ms, avg_ttfb_ms FROM models WHERE id='model-a'"
+        ).fetchone()
+
+    db.writer.stop()
+
+    assert row is not None
+    assert row[0] == pytest.approx((100.0 * (1.0 - ROLLING_METRIC_ALPHA)) + (220.0 * ROLLING_METRIC_ALPHA))
+    assert row[1] == pytest.approx((50.0 * (1.0 - ROLLING_METRIC_ALPHA)) + (110.0 * ROLLING_METRIC_ALPHA))
 
 
 @pytest.mark.asyncio

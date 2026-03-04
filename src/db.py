@@ -4,6 +4,8 @@ import json
 import queue
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -166,8 +168,9 @@ class WriteTask:
 
 
 class DBWriter:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, busy_timeout_ms: int = 5000) -> None:
         self.db_path = db_path
+        self.busy_timeout_ms = busy_timeout_ms
         self._queue: queue.Queue[WriteTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started = False
@@ -190,6 +193,7 @@ class DBWriter:
     def _run(self) -> None:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms};")
         conn.commit()
         while True:
             task = self._queue.get()
@@ -209,13 +213,20 @@ class DBWriter:
 
 
 class Database:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, busy_timeout_ms: int = 5000) -> None:
         self.db_path = db_path
+        self.busy_timeout_ms = busy_timeout_ms
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.writer = DBWriter(db_path)
+        self.writer = DBWriter(db_path, busy_timeout_ms=busy_timeout_ms)
+
+    def _connect(self, *, check_same_thread: bool = True) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=check_same_thread)
+        conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms};")
+        return conn
 
     def init(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        conn = self._connect()
+        try:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA foreign_keys=ON;")
             conn.execute("BEGIN")
@@ -233,11 +244,17 @@ class Database:
                     (version, utc_now_iso()),
                 )
             conn.commit()
+        finally:
+            conn.close()
 
-    def read_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+    @contextmanager
+    def read_conn(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def get_overrides(self) -> dict[str, Any]:
         with self.read_conn() as conn:
@@ -277,6 +294,19 @@ class Database:
             "UPDATE models SET is_active=? WHERE id=?",
             (1 if is_active else 0, model_id),
         )
+
+    def mark_models_not_seen(self, provider_id: str, seen_ids: list[str]) -> None:
+        if seen_ids:
+            placeholders = ",".join("?" for _ in seen_ids)
+            sql = (
+                "UPDATE models SET is_active=0 "
+                f"WHERE provider_id=? AND id NOT IN ({placeholders})"
+            )
+            params = (provider_id, *seen_ids)
+        else:
+            sql = "UPDATE models SET is_active=0 WHERE provider_id=?"
+            params = (provider_id,)
+        self.writer.enqueue(sql, tuple(params))
 
     def log_request(self, entry: dict[str, Any]) -> None:
         self.writer.enqueue(
@@ -325,8 +355,8 @@ class Database:
                 model_name_normalized, chatbot_arena_elo, open_llm_avg_score, fetched_at
             ) VALUES (?, ?, ?, ?)
             ON CONFLICT(model_name_normalized) DO UPDATE SET
-                chatbot_arena_elo=excluded.chatbot_arena_elo,
-                open_llm_avg_score=excluded.open_llm_avg_score,
+                chatbot_arena_elo=COALESCE(excluded.chatbot_arena_elo, leaderboard_cache.chatbot_arena_elo),
+                open_llm_avg_score=COALESCE(excluded.open_llm_avg_score, leaderboard_cache.open_llm_avg_score),
                 fetched_at=excluded.fetched_at
             """,
             (model_name_normalized, chatbot_arena_elo, open_llm_avg_score, utc_now_iso()),
@@ -351,3 +381,19 @@ class Database:
                 (model_name_normalized, cutoff),
             ).fetchone()
         return cast(sqlite3.Row | None, row)
+
+    def prune_old_logs(self, *, retention_days: int) -> int:
+        cutoff = (
+            (datetime.now(timezone.utc) - timedelta(days=retention_days))
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        self.writer.flush()
+        conn = self._connect()
+        try:
+            result = conn.execute("DELETE FROM request_log WHERE timestamp < ?", (cutoff,))
+            conn.commit()
+            return max(int(result.rowcount or 0), 0)
+        finally:
+            conn.close()

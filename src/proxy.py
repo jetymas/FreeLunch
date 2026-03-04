@@ -9,7 +9,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from src.db import utc_now_iso
-from src.health import mark_failure, mark_success
+from src.health import get_probe_budget_summary, mark_failure, mark_success
 from src.providers.base import ProviderError, ProviderRetryableError, StreamResult
 from src.routing import (
     NoHealthyModelsError,
@@ -17,6 +17,7 @@ from src.routing import (
     RoutingRequirements,
     pick_candidates,
 )
+from src.tokens import estimate_required_tokens, request_contains_vision
 
 
 def _check_gateway_auth(request: Request, authorization: str | None) -> None:
@@ -36,14 +37,29 @@ def _readiness_guard(request: Request) -> None:
 
 
 def _parse_requirements(payload: dict) -> RoutingRequirements:
+    messages = payload.get("messages", [])
+    max_completion_tokens = payload.get("max_completion_tokens")
+    if max_completion_tokens is None:
+        max_completion_tokens = payload.get("max_tokens", 0)
+
     return RoutingRequirements(
         requested_model=payload.get("model", "auto"),
         requires_tools=bool(payload.get("tools")),
-        requires_vision=any("image" in str(m.get("content", "")) for m in payload.get("messages", [])),
+        requires_vision=request_contains_vision(messages),
         requires_streaming=bool(payload.get("stream")),
         requires_structured_output=bool(payload.get("response_format")),
-        min_context_window=int(payload.get("min_context_window", 0) or 0),
-        min_output_tokens=int(payload.get("max_tokens", 0) or 0),
+        min_context_window=max(
+            int(payload.get("min_context_window", 0) or 0),
+            estimate_required_tokens(
+                messages,
+                tools=payload.get("tools"),
+                response_format=payload.get("response_format"),
+            ),
+        ),
+        min_output_tokens=int(max_completion_tokens or 0),
+        token_estimation_messages=messages,
+        token_estimation_tools=payload.get("tools"),
+        token_estimation_response_format=payload.get("response_format"),
     )
 
 
@@ -427,6 +443,7 @@ def build_router() -> APIRouter:
             "scheduler": {
                 "jobs": request.app.state.job_status,
             },
+            "probe_budgets": get_probe_budget_summary(db, request.app.state.settings),
             "recent_model_errors": [
                 {"model_id": e[0], "last_error": e[1], "consecutive_failures": e[2]} for e in errors
             ],
@@ -580,6 +597,7 @@ def build_router() -> APIRouter:
         start = time.monotonic()
         request_id = str(uuid.uuid4())
         last_provider_error: ProviderError | None = None
+        all_failures_context_exceeded = True
 
         for idx, candidate in enumerate(candidates):
             model_id = candidate["id"]
@@ -637,10 +655,14 @@ def build_router() -> APIRouter:
                     "provider stream ended before first event",
                     category="PROVIDER_UNAVAILABLE",
                 )
+                all_failures_context_exceeded = False
             except ProviderError as exc:
                 last_provider_error = exc
                 if exc.retryable:
-                    mark_failure(db, model_id, str(exc), settings=settings)
+                    if exc.category != "CONTEXT_EXCEEDED":
+                        all_failures_context_exceeded = False
+                    if exc.category != "CONTEXT_EXCEEDED":
+                        mark_failure(db, model_id, str(exc), settings=settings)
                     _log_failure(
                         db,
                         request_id=request_id,
@@ -675,6 +697,7 @@ def build_router() -> APIRouter:
                     str(exc)[:500],
                     category="PROVIDER_UNAVAILABLE",
                 )
+                all_failures_context_exceeded = False
                 mark_failure(db, model_id, str(exc), settings=settings)
                 _log_failure(
                     db,
@@ -690,6 +713,12 @@ def build_router() -> APIRouter:
                     requires_vision=req.requires_vision,
                 )
 
+        if (
+            last_provider_error is not None
+            and last_provider_error.category == "CONTEXT_EXCEEDED"
+            and all_failures_context_exceeded
+        ):
+            raise HTTPException(status_code=400, detail=str(last_provider_error))
         raise HTTPException(status_code=502, detail=str(last_provider_error or "all candidates failed"))
 
     return router

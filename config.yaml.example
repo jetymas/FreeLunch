@@ -6,11 +6,23 @@ providers:
     api_base: "https://openrouter.ai/api/v1"
     active_probe_enabled: true
 
+discovery:
+  interval_minutes: 30
+  request_timeout_seconds: 15
+  leaderboard:
+    chatbot_arena:
+      enabled: true
+      cache_hours: 24
+    open_llm:
+      enabled: true
+      cache_hours: 24
+
 routing:
   default_model: auto
   max_attempts: 3
 
 ranking:
+  interval_minutes: 15
   fallback_model: "openrouter/openrouter/free"
   weights:
     benchmark_score: 0.30
@@ -34,3 +46,6 @@ health:
   probe_max_tokens: 1
   daily_request_budget_by_provider:
     openrouter: 5
+
+logging:
+  request_log_retention_days: 30

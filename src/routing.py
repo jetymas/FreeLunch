@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.db import Database, utc_now_iso
+from src.tokens import estimate_required_tokens
 
 
 class NoHealthyModelsError(Exception):
@@ -27,6 +28,10 @@ class RoutingRequirements:
     requires_system_messages: bool = True
     min_context_window: int = 0
     min_output_tokens: int = 0
+    token_estimation_messages: list[dict[str, Any]] | None = None
+    token_estimation_tools: Any = None
+    token_estimation_response_format: Any = None
+    token_estimation_safety_buffer: float = 0.15
 
 
 def _serialize_candidate(row: tuple) -> dict[str, Any]:
@@ -40,6 +45,7 @@ def _serialize_candidate(row: tuple) -> dict[str, Any]:
         "context_window": int(row[6] or 0),
         "consecutive_failures": int(row[7] or 0),
         "backoff_level": int(row[8] or 0),
+        "tokenizer_family": row[9],
     }
 
 
@@ -49,7 +55,7 @@ def _load_eligible_candidates(db: Database, req: RoutingRequirements) -> list[di
         rows = conn.execute(
             """
             SELECT id, provider_id, provider_model_id, composite_score, avg_latency_ms, avg_ttfb_ms,
-                   context_window, consecutive_failures, backoff_level
+                   context_window, consecutive_failures, backoff_level, tokenizer_family
             FROM models
             WHERE is_active=1
               AND is_healthy=1
@@ -95,6 +101,30 @@ def _match_explicit_model(
             if candidate["id"] == base_model or candidate["provider_model_id"] == base_model
         ]
     return []
+
+
+def _filter_candidates_by_tokenizer_estimate(
+    candidates: list[dict[str, Any]],
+    req: RoutingRequirements,
+) -> list[dict[str, Any]]:
+    if req.token_estimation_messages is None:
+        return candidates
+
+    filtered: list[dict[str, Any]] = []
+    for candidate in candidates:
+        required_tokens = max(
+            req.min_context_window,
+            estimate_required_tokens(
+                req.token_estimation_messages,
+                tools=req.token_estimation_tools,
+                response_format=req.token_estimation_response_format,
+                safety_buffer=req.token_estimation_safety_buffer,
+                tokenizer_family=str(candidate.get("tokenizer_family") or ""),
+            ),
+        )
+        if int(candidate["context_window"] or 0) >= required_tokens:
+            filtered.append(candidate)
+    return filtered
 
 
 def _preference_score(
@@ -158,9 +188,16 @@ def pick_candidates(
         requires_system_messages=req.requires_system_messages,
         min_context_window=effective_min_context,
         min_output_tokens=req.min_output_tokens,
+        token_estimation_messages=req.token_estimation_messages,
+        token_estimation_tools=req.token_estimation_tools,
+        token_estimation_response_format=req.token_estimation_response_format,
+        token_estimation_safety_buffer=req.token_estimation_safety_buffer,
     )
 
-    candidates = _load_eligible_candidates(db, effective_req)
+    candidates = _filter_candidates_by_tokenizer_estimate(
+        _load_eligible_candidates(db, effective_req),
+        effective_req,
+    )
     if not candidates:
         raise NoHealthyModelsError("No healthy, capability-compatible models are available")
 

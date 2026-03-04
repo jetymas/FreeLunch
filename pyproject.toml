@@ -9,6 +9,14 @@ requires-python = ">=3.11"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [
+    ".pydeps",
+    ".venv314",
+    ".pytest_tmp*",
+    ".mypy_cache",
+    ".ruff_cache",
+    "pytest-cache-files-*",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
@@ -17,12 +25,16 @@ ignore = ["E501", "UP017"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.coverage.report]
+fail_under = 80
+
 [tool.mypy]
 python_version = "3.11"
 strict = false
 ignore_missing_imports = true
 warn_return_any = true
 warn_unused_configs = true
+exclude = '(^|[\\/])(\.pydeps|\.venv314|\.pytest_tmp[^\\/]*|pytest-cache-files-[^\\/]+)([\\/]|$)'
 
 [[tool.mypy.overrides]]
 module = ["yaml"]

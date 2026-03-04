@@ -336,10 +336,10 @@ class OpenRouterAdapter:
 
     def _fallback_model(self) -> dict[str, Any]:
         return {
-            "id": "openrouter/openrouter/auto",
-            "name": "openrouter/auto",
+            "id": "openrouter/openrouter/free",
+            "name": "openrouter/free",
             "provider_id": self.name,
-            "provider_model_id": "openrouter/auto",
+            "provider_model_id": "openrouter/free",
             "provider_base_url": self.api_base,
             "provider_api_key_env": "OPENROUTER_API_KEY",
             "context_window": 4096,

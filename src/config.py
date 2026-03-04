@@ -12,6 +12,8 @@ import yaml
 @dataclass(slots=True)
 class Settings:
     OVERRIDABLE_KEYS: ClassVar[set[str]] = {
+        "discovery.interval_minutes",
+        "ranking.interval_minutes",
         "routing.max_attempts",
         "routing.enable_request_preference_headers",
         "ranking.fallback_model",
@@ -28,6 +30,7 @@ class Settings:
         "health.max_backoff_exponent",
         "health.probe_max_tokens",
         "health.daily_request_budget_by_provider.openrouter",
+        "logging.request_log_retention_days",
     }
     DEFAULT_RANKING_WEIGHTS: ClassVar[dict[str, float]] = {
         "benchmark_score": 0.30,
@@ -40,8 +43,20 @@ class Settings:
 
     openrouter_api_key: str = ""
     gateway_api_key: str = ""
+    gateway_host: str = "0.0.0.0"
+    gateway_port: int = 8000
+    gateway_workers: int = 1
+    gateway_log_level: str = "info"
     database_url: str = "freelunch.db"
+    database_busy_timeout_ms: int = 5000
     app_env: str = "dev"
+    discovery_interval_minutes: int = 30
+    discovery_request_timeout_seconds: int = 15
+    discovery_leaderboard_chatbot_arena_enabled: bool = True
+    discovery_leaderboard_chatbot_arena_cache_hours: int = 24
+    discovery_leaderboard_open_llm_enabled: bool = True
+    discovery_leaderboard_open_llm_cache_hours: int = 24
+    ranking_interval_minutes: int = 15
     routing_max_attempts: int = 3
     routing_enable_request_preference_headers: bool = True
     openrouter_api_base: str = "https://openrouter.ai/api/v1"
@@ -64,6 +79,9 @@ class Settings:
     health_daily_request_budget_by_provider: dict[str, int] = field(
         default_factory=lambda: {"openrouter": 5}
     )
+    logging_request_log_enabled: bool = True
+    logging_log_queue_size: int = 5000
+    logging_request_log_retention_days: int = 30
 
     @classmethod
     def from_env(cls, config_path: str = "config.yaml") -> Settings:
@@ -72,9 +90,20 @@ class Settings:
             with open(config_path, encoding="utf-8") as fh:
                 config_data = yaml.safe_load(fh) or {}
 
+        gateway = config_data.get("gateway", {})
+        discovery = config_data.get("discovery", {})
+        leaderboard = (
+            discovery.get("leaderboard", {}) if isinstance(discovery, dict) else {}
+        )
+        chatbot_arena = (
+            leaderboard.get("chatbot_arena", {}) if isinstance(leaderboard, dict) else {}
+        )
+        open_llm = leaderboard.get("open_llm", {}) if isinstance(leaderboard, dict) else {}
         routing = config_data.get("routing", {})
         health = config_data.get("health", {})
         ranking = config_data.get("ranking", {})
+        logging = config_data.get("logging", {})
+        database = config_data.get("database", {})
         providers = config_data.get("providers", {})
         openrouter = providers.get("openrouter", {}) if isinstance(providers, dict) else {}
         ranking_weights = dict(cls.DEFAULT_RANKING_WEIGHTS)
@@ -87,8 +116,31 @@ class Settings:
         return cls(
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
             gateway_api_key=os.getenv("GATEWAY_API_KEY", ""),
-            database_url=os.getenv("DATABASE_URL", "freelunch.db"),
+            gateway_host=str(gateway.get("host", "0.0.0.0")),
+            gateway_port=max(int(gateway.get("port", 8000)), 1),
+            gateway_workers=max(int(gateway.get("workers", 1)), 1),
+            gateway_log_level=str(gateway.get("log_level", "info")),
+            database_url=os.getenv("DATABASE_URL", database.get("path", "freelunch.db")),
+            database_busy_timeout_ms=max(int(database.get("busy_timeout_ms", 5000)), 1),
             app_env=os.getenv("APP_ENV", "dev"),
+            discovery_interval_minutes=max(int(discovery.get("interval_minutes", 30)), 1),
+            discovery_request_timeout_seconds=max(
+                int(discovery.get("request_timeout_seconds", 15)),
+                1,
+            ),
+            discovery_leaderboard_chatbot_arena_enabled=bool(
+                chatbot_arena.get("enabled", True)
+            ),
+            discovery_leaderboard_chatbot_arena_cache_hours=max(
+                int(chatbot_arena.get("cache_hours", 24)),
+                1,
+            ),
+            discovery_leaderboard_open_llm_enabled=bool(open_llm.get("enabled", True)),
+            discovery_leaderboard_open_llm_cache_hours=max(
+                int(open_llm.get("cache_hours", 24)),
+                1,
+            ),
+            ranking_interval_minutes=max(int(ranking.get("interval_minutes", 15)), 1),
             routing_max_attempts=int(
                 os.getenv("ROUTING_MAX_ATTEMPTS", routing.get("max_attempts", 3))
             ),
@@ -123,9 +175,19 @@ class Settings:
             health_max_backoff_exponent=max(int(health.get("max_backoff_exponent", 4)), 0),
             health_probe_max_tokens=max(int(health.get("probe_max_tokens", 1)), 1),
             health_daily_request_budget_by_provider=probe_budgets,
+            logging_request_log_enabled=bool(logging.get("request_log_enabled", True)),
+            logging_log_queue_size=max(int(logging.get("log_queue_size", 5000)), 1),
+            logging_request_log_retention_days=max(
+                int(logging.get("request_log_retention_days", 30)),
+                1,
+            ),
         )
 
     def apply_overrides(self, overrides: dict[str, Any]) -> None:
+        if "discovery.interval_minutes" in overrides:
+            self.discovery_interval_minutes = max(int(overrides["discovery.interval_minutes"]), 1)
+        if "ranking.interval_minutes" in overrides:
+            self.ranking_interval_minutes = max(int(overrides["ranking.interval_minutes"]), 1)
         if "routing.max_attempts" in overrides:
             self.routing_max_attempts = int(overrides["routing.max_attempts"])
         if "routing.enable_request_preference_headers" in overrides:
@@ -172,6 +234,11 @@ class Settings:
                 int(overrides["health.daily_request_budget_by_provider.openrouter"]),
                 0,
             )
+        if "logging.request_log_retention_days" in overrides:
+            self.logging_request_log_retention_days = max(
+                int(overrides["logging.request_log_retention_days"]),
+                1,
+            )
         for key in self.DEFAULT_RANKING_WEIGHTS:
             override_key = f"ranking.weights.{key}"
             if override_key in overrides:
@@ -206,6 +273,19 @@ class Settings:
 
     def public_settings(self) -> dict[str, Any]:
         return {
+            "gateway.host": self.gateway_host,
+            "gateway.port": self.gateway_port,
+            "gateway.workers": self.gateway_workers,
+            "gateway.log_level": self.gateway_log_level,
+            "database.path": self.database_url,
+            "database.busy_timeout_ms": self.database_busy_timeout_ms,
+            "discovery.interval_minutes": self.discovery_interval_minutes,
+            "discovery.request_timeout_seconds": self.discovery_request_timeout_seconds,
+            "discovery.leaderboard.chatbot_arena.enabled": self.discovery_leaderboard_chatbot_arena_enabled,
+            "discovery.leaderboard.chatbot_arena.cache_hours": self.discovery_leaderboard_chatbot_arena_cache_hours,
+            "discovery.leaderboard.open_llm.enabled": self.discovery_leaderboard_open_llm_enabled,
+            "discovery.leaderboard.open_llm.cache_hours": self.discovery_leaderboard_open_llm_cache_hours,
+            "ranking.interval_minutes": self.ranking_interval_minutes,
             "routing.max_attempts": self.routing_max_attempts,
             "routing.enable_request_preference_headers": self.routing_enable_request_preference_headers,
             "ranking.fallback_model": self.ranking_fallback_model,
@@ -225,4 +305,7 @@ class Settings:
             "health.daily_request_budget_by_provider": dict(
                 self.health_daily_request_budget_by_provider
             ),
+            "logging.request_log_enabled": self.logging_request_log_enabled,
+            "logging.log_queue_size": self.logging_log_queue_size,
+            "logging.request_log_retention_days": self.logging_request_log_retention_days,
         }

@@ -18,7 +18,7 @@ async def run_discovery_pipeline(
     settings,
     recompute_readiness: Callable[[], bool],
 ) -> dict[str, int | bool]:
-    discovered = await run_discovery(db, registry)
+    discovered = await run_discovery(db, registry, settings=settings)
     db.writer.flush()
 
     ranking_updates = recompute_ranking(db, settings=settings)
@@ -89,6 +89,9 @@ async def _track_job_async(
 
 
 def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
+    for job_name in ("discovery", "ranking", "health", "maintenance", "config_refresh"):
+        app_state.job_status.setdefault(job_name, {"run_count": 0})
+
     async def discovery_runner() -> dict[str, int | bool]:
         async def _run() -> dict[str, int | bool]:
             outcome = await run_discovery_pipeline(
@@ -121,9 +124,27 @@ def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
 
         await _track_job_async(app_state.job_status, "health", _run)
 
+    def maintenance_job() -> None:
+        _track_job(
+            app_state.job_status,
+            "maintenance",
+            lambda: db.prune_old_logs(
+                retention_days=app_state.settings.logging_request_log_retention_days
+            ),
+        )
+
+    def config_refresh_job() -> None:
+        _track_job(
+            app_state.job_status,
+            "config_refresh",
+            app_state.reload_settings,
+        )
+
+    app_state.config_refresh_runner = config_refresh_job
+
     scheduler.add_job(
         discovery_runner,
-        IntervalTrigger(minutes=30),
+        IntervalTrigger(minutes=app_state.settings.discovery_interval_minutes),
         id="discovery",
         replace_existing=True,
         max_instances=1,
@@ -131,7 +152,7 @@ def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
     )
     scheduler.add_job(
         rank_job,
-        IntervalTrigger(minutes=15),
+        IntervalTrigger(minutes=app_state.settings.ranking_interval_minutes),
         id="ranking",
         replace_existing=True,
         max_instances=1,
@@ -141,6 +162,22 @@ def register_jobs(scheduler: AsyncIOScheduler, db, registry, app_state) -> None:
         health_job,
         IntervalTrigger(minutes=app_state.settings.health_probe_interval_minutes),
         id="health",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        maintenance_job,
+        IntervalTrigger(hours=24),
+        id="maintenance",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        config_refresh_job,
+        IntervalTrigger(minutes=5),
+        id="config_refresh",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

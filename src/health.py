@@ -7,6 +7,8 @@ from typing import Any
 from src.config import Settings
 from src.db import Database, utc_now_iso
 
+ROLLING_METRIC_ALPHA = 0.3
+
 
 def _iso_after_minutes(minutes: int) -> str:
     return (
@@ -43,6 +45,23 @@ def get_provider_probe_usage(db: Database, provider_id: str, utc_day: str) -> in
             (provider_id, utc_day),
         ).fetchone()
     return int(row[0] or 0) if row else 0
+
+
+def get_probe_budget_summary(db: Database, settings: Settings) -> list[dict[str, int | str]]:
+    utc_day = _utc_day()
+    summary: list[dict[str, int | str]] = []
+    for provider_id, limit in sorted(settings.health_daily_request_budget_by_provider.items()):
+        used = get_provider_probe_usage(db, provider_id, utc_day)
+        summary.append(
+            {
+                "provider_id": provider_id,
+                "utc_day": utc_day,
+                "limit": int(limit),
+                "used": used,
+                "remaining": max(int(limit) - used, 0),
+            }
+        )
+    return summary
 
 
 def mark_failure(db: Database, model_id: str, error: str, settings: Settings | None = None) -> None:
@@ -109,11 +128,35 @@ def mark_success(
             last_routed_at=?,
             last_health_check=?,
             last_probe_at=COALESCE(?, last_probe_at),
-            avg_latency_ms=COALESCE(?, avg_latency_ms),
-            avg_ttfb_ms=COALESCE(?, avg_ttfb_ms)
+            avg_latency_ms=CASE
+                WHEN ? IS NULL THEN avg_latency_ms
+                WHEN avg_latency_ms IS NULL THEN ?
+                ELSE ((avg_latency_ms * ?) + (? * ?))
+            END,
+            avg_ttfb_ms=CASE
+                WHEN ? IS NULL THEN avg_ttfb_ms
+                WHEN avg_ttfb_ms IS NULL THEN ?
+                ELSE ((avg_ttfb_ms * ?) + (? * ?))
+            END
         WHERE id=?
         """,
-        (now, now, now, probed_at, latency_ms, ttfb_ms, model_id),
+        (
+            now,
+            now,
+            now,
+            probed_at,
+            latency_ms,
+            latency_ms,
+            1.0 - ROLLING_METRIC_ALPHA,
+            latency_ms,
+            ROLLING_METRIC_ALPHA,
+            ttfb_ms,
+            ttfb_ms,
+            1.0 - ROLLING_METRIC_ALPHA,
+            ttfb_ms,
+            ROLLING_METRIC_ALPHA,
+            model_id,
+        ),
     )
 
 
