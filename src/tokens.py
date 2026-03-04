@@ -35,7 +35,7 @@ _TEXT_PIECE_RE = re.compile(r"\s+|\w+|[^\w\s]", re.UNICODE)
 _JSON_MESSAGE_FIELDS = ("tool_calls", "function_call", "audio")
 _TEXT_MESSAGE_FIELDS = ("name", "tool_call_id", "refusal")
 _MODEL_HINT_SUFFIX_RE = re.compile(r":[A-Za-z0-9._-]+$")
-_JSON_LIKE_RE = re.compile(r'^\s*[\[{].*[\]}]\s*$', re.DOTALL)
+_JSON_LIKE_RE = re.compile(r"^\s*[\[{].*[\]}]\s*$", re.DOTALL)
 _KNOWN_REPO_TOKEN_CASE = {
     "llama": "Llama",
     "meta": "Meta",
@@ -321,8 +321,10 @@ def _candidate_repo_names(org: str, repo: str) -> tuple[str, ...]:
         if meta_prefixed not in candidates:
             candidates.append(meta_prefixed)
 
-    if org.lower() == "stepfun-ai" and canonical_repo.startswith("Step-") and not canonical_repo.endswith(
-        ("-FP8", "-BF16")
+    if (
+        org.lower() == "stepfun-ai"
+        and canonical_repo.startswith("Step-")
+        and not canonical_repo.endswith(("-FP8", "-BF16"))
     ):
         for suffix in ("-FP8", "-BF16"):
             suffixed = f"{canonical_repo}{suffix}"
@@ -357,7 +359,9 @@ def _candidate_repo_names(org: str, repo: str) -> tuple[str, ...]:
         if fp8 not in candidates:
             candidates.append(fp8)
 
-    if org.lower() in {"cohere", "coherelabs", "cohereforai"} and repo.lower().startswith("command-"):
+    if org.lower() in {"cohere", "coherelabs", "cohereforai"} and repo.lower().startswith(
+        "command-"
+    ):
         c4ai_repo = f"c4ai-{repo.lower()}"
         if c4ai_repo not in candidates:
             candidates.append(c4ai_repo)
@@ -646,12 +650,8 @@ def _detect_text_content_type(text: str) -> str:
     )
     punctuation_count = sum(1 for char in text if not char.isalnum() and not char.isspace())
     punctuation_density = punctuation_count / max(len(text), 1)
-    if (
-        newline_count >= 2
-        and (
-            any(marker in lowered for marker in code_markers)
-            or punctuation_density >= 0.12
-        )
+    if newline_count >= 2 and (
+        any(marker in lowered for marker in code_markers) or punctuation_density >= 0.12
     ):
         return "code"
     if any(marker in lowered for marker in code_markers):
@@ -718,6 +718,7 @@ def _text_token_estimate(
         tokenizer_family=tokenizer_family,
     )
 
+
 def _json_token_estimate(
     value: Any,
     tokenizer_family: str | None = None,
@@ -735,11 +736,7 @@ def _is_image_part(part: Any) -> bool:
     if not isinstance(part, dict):
         return False
     part_type = str(part.get("type", "")).lower()
-    return (
-        "image" in part_type
-        or "image_url" in part
-        or "input_image" in part
-    )
+    return "image" in part_type or "image_url" in part or "input_image" in part
 
 
 def _estimate_message_tokens(

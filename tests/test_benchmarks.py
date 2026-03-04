@@ -232,8 +232,7 @@ async def test_fetch_chatbot_arena_scores_prefers_elo_snapshot_when_parseable():
                 }
             ),
             benchmarks._ARENA_RAW_URL.format(path="leaderboard_table_20250804.csv"): (
-                "Model,Arena Score\n"
-                "Meta-Llama/Llama-3.3-70B-Instruct,1265.5\n"
+                "Model,Arena Score\n" "Meta-Llama/Llama-3.3-70B-Instruct,1265.5\n"
             ),
         }
     )
@@ -256,8 +255,7 @@ async def test_fetch_chatbot_arena_scores_falls_back_when_snapshot_cannot_be_par
             ],
             benchmarks._ARENA_RAW_URL.format(path="elo_results_20250829.pkl"): b"not-a-pickle",
             benchmarks._ARENA_RAW_URL.format(path="leaderboard_table_20250804.csv"): (
-                "Model,Arena ELO\n"
-                "Meta-Llama/Llama-3.3-70B-Instruct,1265.5\n"
+                "Model,Arena ELO\n" "Meta-Llama/Llama-3.3-70B-Instruct,1265.5\n"
             ),
         }
     )

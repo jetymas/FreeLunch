@@ -298,7 +298,9 @@ def test_log_request_persists_token_estimation_observability_fields(tmp_path):
 
 
 def test_normalize_model_name_drops_common_noise_tokens():
-    assert normalize_model_name("Meta-Llama/Llama-3.3-70B-Instruct:Free") == "meta llama llama 3 3 70b"
+    assert (
+        normalize_model_name("Meta-Llama/Llama-3.3-70B-Instruct:Free") == "meta llama llama 3 3 70b"
+    )
 
 
 class _FakeProvider:

@@ -82,11 +82,14 @@ def _count_cached_source_entries(db: Database, *, column_name: str, max_age_hour
 
 
 def _source_cache_ready(db: Database, *, column_name: str, max_age_hours: int) -> bool:
-    return _count_cached_source_entries(
-        db,
-        column_name=column_name,
-        max_age_hours=max_age_hours,
-    ) > 0
+    return (
+        _count_cached_source_entries(
+            db,
+            column_name=column_name,
+            max_age_hours=max_age_hours,
+        )
+        > 0
+    )
 
 
 def _matching_paths(

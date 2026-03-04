@@ -485,9 +485,7 @@ def test_extract_error_details_falls_back_to_plain_text_for_non_json_body():
 def test_extract_error_details_supports_top_level_message_and_non_string_code():
     adapter = OpenRouterAdapter(api_key="test-key")
 
-    message, error_code = adapter._extract_error_details(
-        b'{"message":"quota exceeded","code":429}'
-    )
+    message, error_code = adapter._extract_error_details(b'{"message":"quota exceeded","code":429}')
 
     assert message == "quota exceeded"
     assert error_code == "429"
@@ -687,7 +685,7 @@ async def test_stream_chat_completions_merges_sse_lines_and_ignores_comments(mon
     response = _FakeStreamingResponse(
         lines=[
             ": ping",
-            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}",
+            'data: {"choices":[{"delta":{"content":"hi"}}]}',
             "",
             "data: [DONE]",
             "",

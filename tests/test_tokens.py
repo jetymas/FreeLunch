@@ -182,7 +182,10 @@ def test_estimate_required_tokens_falls_back_when_hf_tokenizer_unavailable(monke
 
 def test_detect_text_content_type_distinguishes_prose_code_and_json():
     assert _detect_text_content_type("Write a short summary about the routing system.") == "prose"
-    assert _detect_text_content_type('{"type":"object","properties":{"name":{"type":"string"}}}') == "json"
+    assert (
+        _detect_text_content_type('{"type":"object","properties":{"name":{"type":"string"}}}')
+        == "json"
+    )
     assert (
         _detect_text_content_type(
             "def greet(name):\n    message = f'hello {name}'\n    return message\n"
@@ -207,9 +210,7 @@ def test_estimate_required_tokens_uses_family_and_content_type_calibration_for_p
 
 
 def test_estimate_required_tokens_uses_family_and_content_type_calibration_for_code():
-    content = "\n".join(
-        [f"def func_{i}(value): return value * {i}" for i in range(80)]
-    )
+    content = "\n".join([f"def func_{i}(value): return value * {i}" for i in range(80)])
 
     actual = estimate_required_tokens(
         [{"role": "user", "content": content}],

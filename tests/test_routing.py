@@ -68,8 +68,20 @@ def test_pick_candidates_uses_latency_preference_for_reranking(tmp_path):
     db = Database(str(tmp_path / "routing-latency.db"))
     db.init()
     db.writer.start()
-    _insert_model(db, "openrouter/model-fast", provider_model_id="model-fast", composite_score=70.0, avg_latency_ms=100)
-    _insert_model(db, "openrouter/model-slow", provider_model_id="model-slow", composite_score=80.0, avg_latency_ms=3000)
+    _insert_model(
+        db,
+        "openrouter/model-fast",
+        provider_model_id="model-fast",
+        composite_score=70.0,
+        avg_latency_ms=100,
+    )
+    _insert_model(
+        db,
+        "openrouter/model-slow",
+        provider_model_id="model-slow",
+        composite_score=80.0,
+        avg_latency_ms=3000,
+    )
     db.writer.flush()
 
     candidates = pick_candidates(

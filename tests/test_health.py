@@ -85,9 +85,7 @@ def test_mark_success_uses_rolling_latency_and_ttfb(tmp_path):
     db.init()
     db.writer.start()
     _insert_model(db, "model-a")
-    db.writer.enqueue(
-        "UPDATE models SET avg_latency_ms=100.0, avg_ttfb_ms=50.0 WHERE id='model-a'"
-    )
+    db.writer.enqueue("UPDATE models SET avg_latency_ms=100.0, avg_ttfb_ms=50.0 WHERE id='model-a'")
     db.writer.flush()
 
     mark_success(db, "model-a", latency_ms=220.0, ttfb_ms=110.0)
@@ -101,8 +99,12 @@ def test_mark_success_uses_rolling_latency_and_ttfb(tmp_path):
     db.writer.stop()
 
     assert row is not None
-    assert row[0] == pytest.approx((100.0 * (1.0 - ROLLING_METRIC_ALPHA)) + (220.0 * ROLLING_METRIC_ALPHA))
-    assert row[1] == pytest.approx((50.0 * (1.0 - ROLLING_METRIC_ALPHA)) + (110.0 * ROLLING_METRIC_ALPHA))
+    assert row[0] == pytest.approx(
+        (100.0 * (1.0 - ROLLING_METRIC_ALPHA)) + (220.0 * ROLLING_METRIC_ALPHA)
+    )
+    assert row[1] == pytest.approx(
+        (50.0 * (1.0 - ROLLING_METRIC_ALPHA)) + (110.0 * ROLLING_METRIC_ALPHA)
+    )
 
 
 @pytest.mark.asyncio
@@ -311,9 +313,9 @@ def test_get_token_estimation_review_summary_flags_context_failure_rates(tmp_pat
     )
     assert llama_row["context_exceeded_failures"] == 5
     assert llama_row["flagged_for_review"] is True
-    assert {
-        item["tokenizer_family"] for item in summary["review_flags"]["tokenizer_families"]
-    } == {"llama3"}
+    assert {item["tokenizer_family"] for item in summary["review_flags"]["tokenizer_families"]} == {
+        "llama3"
+    }
 
 
 def test_get_token_estimation_review_summary_flags_failover_recoveries(tmp_path):
@@ -345,12 +347,8 @@ def test_get_token_estimation_review_summary_flags_failover_recoveries(tmp_path)
         """,
         (now, now, now, now, now, now),
     )
-    db.writer.enqueue(
-        "UPDATE models SET context_window=32000 WHERE id='model-small'"
-    )
-    db.writer.enqueue(
-        "UPDATE models SET context_window=256 WHERE id='model-large'"
-    )
+    db.writer.enqueue("UPDATE models SET context_window=32000 WHERE id='model-small'")
+    db.writer.enqueue("UPDATE models SET context_window=256 WHERE id='model-large'")
     db.writer.flush()
 
     summary = get_token_estimation_review_summary(db)

@@ -70,7 +70,9 @@ def _check_gateway_auth(request: Request, authorization: str | None) -> None:
 
 def _readiness_guard(request: Request) -> None:
     if not request.app.state.ready:
-        raise HTTPException(status_code=503, detail="gateway not ready", headers={"Retry-After": "10"})
+        raise HTTPException(
+            status_code=503, detail="gateway not ready", headers={"Retry-After": "10"}
+        )
 
 
 def _parse_requirements(payload: dict) -> RoutingRequirements:
@@ -194,7 +196,11 @@ def _parse_stream_event(raw_event: bytes) -> tuple[dict | None, bool]:
 
 
 def _is_comment_event(raw_event: bytes) -> bool:
-    lines = [line.strip() for line in raw_event.decode("utf-8", errors="ignore").splitlines() if line.strip()]
+    lines = [
+        line.strip()
+        for line in raw_event.decode("utf-8", errors="ignore").splitlines()
+        if line.strip()
+    ]
     return bool(lines) and all(line.startswith(":") for line in lines)
 
 
@@ -368,7 +374,9 @@ def build_router() -> APIRouter:
         return {"status": "ready"}
 
     @router.get("/v1/models")
-    async def list_models(request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def list_models(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         _readiness_guard(request)
         db = request.app.state.db
@@ -385,7 +393,9 @@ def build_router() -> APIRouter:
         }
 
     @router.get("/admin/models")
-    async def admin_models(request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def admin_models(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         db = request.app.state.db
         with db.read_conn() as conn:
@@ -401,7 +411,9 @@ def build_router() -> APIRouter:
         return {"models": [_serialize_model_row(m) for m in rows]}
 
     @router.get("/admin/models/{model_id:path}")
-    async def admin_model_detail(model_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def admin_model_detail(
+        model_id: str, request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         db = request.app.state.db
         with db.read_conn() as conn:
@@ -420,7 +432,9 @@ def build_router() -> APIRouter:
         return {"model": _serialize_model_row(row)}
 
     @router.post("/admin/models/{model_id:path}/disable")
-    async def admin_disable_model(model_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def admin_disable_model(
+        model_id: str, request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         db = request.app.state.db
         with db.read_conn() as conn:
@@ -434,7 +448,9 @@ def build_router() -> APIRouter:
         return {"status": "disabled", "model_id": model_id}
 
     @router.post("/admin/models/{model_id:path}/enable")
-    async def admin_enable_model(model_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def admin_enable_model(
+        model_id: str, request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         db = request.app.state.db
         with db.read_conn() as conn:
@@ -448,7 +464,9 @@ def build_router() -> APIRouter:
         return {"status": "enabled", "model_id": model_id}
 
     @router.get("/admin/health")
-    async def admin_health(request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def admin_health(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         db = request.app.state.db
         with db.read_conn() as conn:
@@ -509,7 +527,9 @@ def build_router() -> APIRouter:
         }
 
     @router.get("/admin/config")
-    async def admin_config(request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def admin_config(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         db = request.app.state.db
         overrides = [
@@ -577,7 +597,9 @@ def build_router() -> APIRouter:
         }
 
     @router.post("/admin/refresh")
-    async def admin_refresh(request: Request, authorization: str | None = Header(default=None)) -> dict:
+    async def admin_refresh(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
         _check_gateway_auth(request, authorization)
         discovery_runner = getattr(request.app.state, "discovery_runner", None)
         if discovery_runner is None:
@@ -649,7 +671,9 @@ def build_router() -> APIRouter:
         return {"logs": logs, "count": len(logs), "limit": capped_limit}
 
     @router.post("/v1/chat/completions")
-    async def chat_completions(payload: dict, request: Request, authorization: str | None = Header(default=None)):
+    async def chat_completions(
+        payload: dict, request: Request, authorization: str | None = Header(default=None)
+    ):
         _check_gateway_auth(request, authorization)
         _readiness_guard(request)
 
@@ -739,7 +763,9 @@ def build_router() -> APIRouter:
             )
             try:
                 if req.requires_streaming:
-                    stream_result = await provider.stream_chat_completions(payload, model=model_name)
+                    stream_result = await provider.stream_chat_completions(
+                        payload, model=model_name
+                    )
                     first_event = await anext(stream_result.events)
                     while _is_comment_event(first_event):
                         first_event = await anext(stream_result.events)
@@ -888,7 +914,9 @@ def build_router() -> APIRouter:
                     error_category=exc.category,
                     error_code=exc.error_code,
                 )
-                raise HTTPException(status_code=_provider_error_status(exc), detail=str(exc)) from exc
+                raise HTTPException(
+                    status_code=_provider_error_status(exc), detail=str(exc)
+                ) from exc
             except Exception as exc:
                 last_provider_error = ProviderRetryableError(
                     str(exc)[:500],
@@ -945,8 +973,12 @@ def build_router() -> APIRouter:
             level=30,
             message="All provider candidates failed",
             request_id=request_id,
-            error_category=last_provider_error.category if last_provider_error is not None else None,
+            error_category=last_provider_error.category
+            if last_provider_error is not None
+            else None,
         )
-        raise HTTPException(status_code=502, detail=str(last_provider_error or "all candidates failed"))
+        raise HTTPException(
+            status_code=502, detail=str(last_provider_error or "all candidates failed")
+        )
 
     return router

@@ -303,9 +303,7 @@ def get_token_estimation_review_summary(
         total_requests = int(row["total_requests"] or 0)
         context_exceeded_failures = int(row["context_exceeded_failures"] or 0)
         failure_rate = (
-            float(context_exceeded_failures) / float(total_requests)
-            if total_requests > 0
-            else 0.0
+            float(context_exceeded_failures) / float(total_requests) if total_requests > 0 else 0.0
         )
         flagged = (
             context_exceeded_failures >= TOKEN_CONTEXT_FAILURE_MIN_COUNT
@@ -330,9 +328,7 @@ def get_token_estimation_review_summary(
         total_requests = int(row["total_requests"] or 0)
         context_exceeded_failures = int(row["context_exceeded_failures"] or 0)
         failure_rate = (
-            float(context_exceeded_failures) / float(total_requests)
-            if total_requests > 0
-            else 0.0
+            float(context_exceeded_failures) / float(total_requests) if total_requests > 0 else 0.0
         )
         flagged = (
             context_exceeded_failures >= TOKEN_CONTEXT_FAILURE_MIN_COUNT
@@ -765,8 +761,7 @@ def get_probe_runtime_summary(db: Database, settings: Settings) -> dict[str, Any
                     THEN 1 ELSE 0 END
                 ) AS active_cooldowns
             FROM models
-            """
-            ,
+            """,
             (now_iso, stale_before, stale_before, now_iso),
         ).fetchone()
         provider_rows = conn.execute(

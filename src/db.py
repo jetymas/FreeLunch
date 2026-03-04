@@ -166,10 +166,7 @@ def _add_column_if_missing(
     column_name: str,
     column_sql: str,
 ) -> None:
-    columns = {
-        str(row[1])
-        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    }
+    columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
     if column_name in columns:
         return
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")

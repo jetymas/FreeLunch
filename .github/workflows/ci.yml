@@ -63,11 +63,23 @@ jobs:
               exit 0
               ;;
             compose)
-              case "${2:-}" in
-                version|up|down)
-                  exit 0
-                  ;;
-              esac
+              shift
+              while [ "$#" -gt 0 ]; do
+                case "$1" in
+                  version|up|down)
+                    exit 0
+                    ;;
+                  --project-directory|-f)
+                    shift
+                    if [ "$#" -gt 0 ]; then
+                      shift
+                    fi
+                    ;;
+                  *)
+                    shift
+                    ;;
+                esac
+              done
               ;;
           esac
           printf 'unexpected docker invocation: %s\n' "$*" >&2

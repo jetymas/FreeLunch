@@ -102,9 +102,7 @@ class Settings:
 
         gateway = config_data.get("gateway", {})
         discovery = config_data.get("discovery", {})
-        leaderboard = (
-            discovery.get("leaderboard", {}) if isinstance(discovery, dict) else {}
-        )
+        leaderboard = discovery.get("leaderboard", {}) if isinstance(discovery, dict) else {}
         chatbot_arena = (
             leaderboard.get("chatbot_arena", {}) if isinstance(leaderboard, dict) else {}
         )
@@ -117,7 +115,9 @@ class Settings:
         providers = config_data.get("providers", {})
         openrouter = providers.get("openrouter", {}) if isinstance(providers, dict) else {}
         enabled_providers = cls._coerce_string_list(
-            providers.get("enabled", ["openrouter"]) if isinstance(providers, dict) else ["openrouter"]
+            providers.get("enabled", ["openrouter"])
+            if isinstance(providers, dict)
+            else ["openrouter"]
         )
         openrouter_globally_enabled = "openrouter" in enabled_providers
         openrouter_enabled = openrouter_globally_enabled and bool(openrouter.get("enabled", True))
@@ -153,9 +153,7 @@ class Settings:
                 int(discovery.get("request_timeout_seconds", 15)),
                 1,
             ),
-            discovery_leaderboard_chatbot_arena_enabled=bool(
-                chatbot_arena.get("enabled", True)
-            ),
+            discovery_leaderboard_chatbot_arena_enabled=bool(chatbot_arena.get("enabled", True)),
             discovery_leaderboard_chatbot_arena_cache_hours=max(
                 int(chatbot_arena.get("cache_hours", 24)),
                 1,

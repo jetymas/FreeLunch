@@ -34,7 +34,9 @@ def _insert_backup_model(
     client.app.state.recompute_readiness()
 
 
-def _build_client_with_config(tmp_path, monkeypatch: pytest.MonkeyPatch, config_text: str) -> TestClient:
+def _build_client_with_config(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, config_text: str
+) -> TestClient:
     base_config = {
         "discovery": {
             "leaderboard": {

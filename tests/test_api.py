@@ -82,7 +82,12 @@ def test_success_logs_token_estimation_observability_fields(client, monkeypatch)
 
     async def fake_chat(self, request_body, model):
         return ChatResult(
-            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []},
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [],
+            },
             prompt_tokens=48,
             completion_tokens=8,
             total_tokens=56,
@@ -260,7 +265,9 @@ def test_request_preference_headers_can_be_disabled(client, monkeypatch):
 
 
 def test_token_estimation_routes_away_from_small_context_models(client, monkeypatch):
-    _insert_backup_model(client, model_id="openrouter/model-large-context", provider_model_id="model-large-context")
+    _insert_backup_model(
+        client, model_id="openrouter/model-large-context", provider_model_id="model-large-context"
+    )
     _update_model(
         client,
         "openrouter/openrouter/free",
@@ -276,7 +283,12 @@ def test_token_estimation_routes_away_from_small_context_models(client, monkeypa
 
     async def fake_chat(self, request_body, model):
         return ChatResult(
-            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []}
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [],
+            }
         )
 
     monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
@@ -314,7 +326,12 @@ def test_tokenizer_family_estimation_routes_away_from_tighter_tokenizers(client,
 
     async def fake_chat(self, request_body, model):
         return ChatResult(
-            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []}
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [],
+            }
         )
 
     monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
@@ -350,7 +367,12 @@ def test_structured_message_metadata_counts_toward_context_requirements(client, 
 
     async def fake_chat(self, request_body, model):
         return ChatResult(
-            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []}
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [],
+            }
         )
 
     monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
@@ -382,7 +404,9 @@ def test_structured_message_metadata_counts_toward_context_requirements(client, 
 
 
 def test_structured_multimodal_requests_require_vision_models(client, monkeypatch):
-    _insert_backup_model(client, model_id="openrouter/model-vision", provider_model_id="model-vision")
+    _insert_backup_model(
+        client, model_id="openrouter/model-vision", provider_model_id="model-vision"
+    )
     _update_model(
         client,
         "openrouter/openrouter/free",
@@ -398,7 +422,12 @@ def test_structured_multimodal_requests_require_vision_models(client, monkeypatc
 
     async def fake_chat(self, request_body, model):
         return ChatResult(
-            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []}
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [],
+            }
         )
 
     monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
@@ -411,7 +440,10 @@ def test_structured_multimodal_requests_require_vision_models(client, monkeypatc
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "Describe this image"},
-                        {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.com/image.png"},
+                        },
                     ],
                 }
             ],
@@ -422,7 +454,9 @@ def test_structured_multimodal_requests_require_vision_models(client, monkeypatc
 
 
 def test_max_completion_tokens_filters_models_by_output_limit(client, monkeypatch):
-    _insert_backup_model(client, model_id="openrouter/model-output", provider_model_id="model-output")
+    _insert_backup_model(
+        client, model_id="openrouter/model-output", provider_model_id="model-output"
+    )
     _update_model(
         client,
         "openrouter/openrouter/free",
@@ -438,7 +472,12 @@ def test_max_completion_tokens_filters_models_by_output_limit(client, monkeypatc
 
     async def fake_chat(self, request_body, model):
         return ChatResult(
-            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model, "choices": []}
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [],
+            }
         )
 
     monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
