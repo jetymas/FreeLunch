@@ -16,6 +16,14 @@ if str(ROOT) not in sys.path:
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     (tmp_path / "config.yaml").write_text(
         """
+discovery:
+  leaderboard:
+    chatbot_arena:
+      enabled: false
+    open_llm:
+      enabled: false
+health:
+  startup_probe_limit: 0
 providers:
   enabled:
     - openrouter
@@ -24,6 +32,7 @@ providers:
     discovery_enabled: true
     inference_enabled: true
     dev_stub_enabled: true
+    active_probe_enabled: false
 """.strip(),
         encoding="utf-8",
     )

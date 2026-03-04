@@ -41,6 +41,9 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ### Fixed
 
+- CI lint/install validation now passes current Ruff `UP038` and ShellCheck expectations in `src/benchmarks.py` and `install.sh`.
+- App-heavy tests now disable external leaderboard refresh and startup probes in their generated configs so CI runtime is not dominated by repeated network-bound startup work.
+- The Docker smoke job now boots the image under explicit dev-stub mode instead of expecting no-key startup to succeed without configured runtime capability.
 - The no-key OpenRouter stub fallback model is aligned with the configured routing fallback identity.
 - OpenRouter startup no longer remains ready on stale persisted rows when credentials are missing and explicit dev-stub mode is off.
 - Real OpenRouter discovery no longer synthesizes a fake fallback model when `/models` returns no eligible entries.

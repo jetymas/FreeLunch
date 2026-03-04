@@ -23,6 +23,7 @@ prompt() {
     question="$1"
     default_value="${2:-}"
     env_name="${3:-}"
+    env_value=""
     if [ -n "$env_name" ]; then
         eval "env_is_set=\${${env_name}+x}"
         eval "env_value=\${$env_name-}"

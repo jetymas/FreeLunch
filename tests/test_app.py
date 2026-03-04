@@ -4,6 +4,7 @@ import importlib
 from datetime import datetime, timezone
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from src.db import Database, utc_now_iso
@@ -34,8 +35,20 @@ def _insert_backup_model(
 
 
 def _build_client_with_config(tmp_path, monkeypatch: pytest.MonkeyPatch, config_text: str) -> TestClient:
+    base_config = {
+        "discovery": {
+            "leaderboard": {
+                "chatbot_arena": {"enabled": False},
+                "open_llm": {"enabled": False},
+            }
+        },
+        "health": {"startup_probe_limit": 0},
+        "providers": {"openrouter": {"active_probe_enabled": False}},
+    }
+    user_config = yaml.safe_load(config_text.strip()) or {}
+    _merge_test_config(base_config, user_config)
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(config_text.strip(), encoding="utf-8")
+    config_path.write_text(yaml.safe_dump(base_config, sort_keys=False), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -45,6 +58,14 @@ def _build_client_with_config(tmp_path, monkeypatch: pytest.MonkeyPatch, config_
 
     main_module = importlib.reload(main_module)
     return TestClient(main_module.app)
+
+
+def _merge_test_config(base: dict, override: dict) -> None:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _merge_test_config(base[key], value)
+        else:
+            base[key] = value
 
 
 def test_models_endpoint(client):

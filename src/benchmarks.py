@@ -151,7 +151,7 @@ def _parse_chatbot_arena_snapshot(payload: Any) -> dict[str, float]:
         for model_name, value in payload.items():
             if not isinstance(model_name, str):
                 continue
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 _update_score(direct_scores, model_name, float(value))
                 continue
             if isinstance(value, dict):
@@ -176,7 +176,7 @@ def _parse_chatbot_arena_snapshot(payload: Any) -> dict[str, float]:
             nested_scores.update(_parse_chatbot_arena_snapshot(value))
         return nested_scores
 
-    if isinstance(payload, (list, tuple)):
+    if isinstance(payload, list | tuple):
         scores: dict[str, float] = {}
         for item in payload:
             scores.update(_parse_chatbot_arena_snapshot(item))

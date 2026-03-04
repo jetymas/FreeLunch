@@ -142,7 +142,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-dev.txt
       - name: Run tests
-        run: pytest tests --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        run: pytest tests --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=80 --durations=10
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
@@ -157,7 +157,7 @@ jobs:
       - name: Build image
         run: docker build -t freelunch:test .
       - name: Run smoke container
-        run: docker run -d --rm --name freelunch-smoke -p 8000:8000 freelunch:test
+        run: docker run -d --rm --name freelunch-smoke -p 8000:8000 -e APP_ENV=dev -e OPENROUTER_DEV_STUB_ENABLED=true freelunch:test
       - name: Smoke test healthz
         run: |
           python - <<'PY'

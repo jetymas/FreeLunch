@@ -136,6 +136,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Benchmark refresh now respects per-source cache freshness and skips fetches when cached source data is still fresh; preserve that behavior if you touch `src/benchmarks.py`.
 - Chatbot Arena refresh now attempts the newest parseable `elo_results_*.pkl` snapshot first, then newer-to-older `leaderboard_table_*.csv` files, then `arena_hard_auto_leaderboard_*.csv`.
 - Open LLM refresh now needs to stay compatible with the current Hugging Face dataset-server row-page limit instead of assuming larger `rows` page sizes will be accepted.
+- App-heavy tests in `tests/conftest.py` and `tests/test_app.py` intentionally disable external leaderboard refresh and startup probes in their generated configs; preserve that isolation so CI runtime is not dominated by repeated network-bound startup work.
 - Request requirement parsing now lives partly in `src/tokens.py`; keep vision detection and token estimation there instead of growing ad hoc parsing logic inside `src/proxy.py`.
 - Routing now also re-checks context fit against each candidate's `tokenizer_family`; if you change request sizing, keep `src/tokens.py`, `src/proxy.py`, and `src/routing.py` aligned.
 - OpenAI-compatible families now use `tiktoken` when a candidate exposes a compatible `provider_model_id` or tokenizer family such as `cl100k_base` / `o200k_base`; preserve that exact-count path and keep heuristic fallback limited to unsupported families.
@@ -167,6 +168,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - `get_token_estimation_review_summary()` should prefer request-time `selected_context_window` snapshots over live model metadata when analyzing context-failover recoveries; preserve that historical behavior when changing health review queries.
 - Benchmark-name normalization now lives in `src/benchmarks.py`; reuse it for cache refresh and discovery joins instead of reintroducing duplicate normalization logic.
 - Installer assets now live at repo root (`install.sh`, `uninstall.sh`, `install.ps1`, `uninstall.ps1`) and CI smoke-tests them with env-driven non-interactive inputs against a fake Docker shim; keep those env override paths working when changing installer prompts.
+- The Docker image smoke test intentionally sets `APP_ENV=dev` plus `OPENROUTER_DEV_STUB_ENABLED=true` so `/healthz` can validate app bootstrap without real provider credentials; do not silently change that CI assumption without updating the workflow and docs together.
 
 ## Common Pitfalls
 
