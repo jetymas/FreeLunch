@@ -2,24 +2,22 @@
 
 # FreeLunch
 
-**A self-hosted, OpenAI-compatible gateway that routes requests to the best available model path.**
+**A self-hosted, OpenAI-compatible gateway that routes requests to the best available free model.**
 
-*There’s no such thing as a free lunch.*
+*"There's no such thing as a free lunch." -Idiots*
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](./pyproject.toml)
 [![Docker](https://img.shields.io/badge/docker-supported-2496ED)](./docker-compose.yml)
 [![FastAPI](https://img.shields.io/badge/FastAPI-OpenAI--compatible-009688)](https://fastapi.tiangolo.com/)
 
-[Quick Start](#quick-start) · [How It Works](#how-it-works) · [UML](#uml-project-model-detailed) · [Docs Map](#documentation-map)
+[Quick Start](#quick-start) · [How It Works](#how-it-works) · [Project Model](#project-model) · [Docs Map](#documentation-map)
 
 </div>
 
 ## Why this project exists
 
 Model/provider availability changes constantly. FreeLunch gives clients one stable `/v1` API while the gateway handles discovery, health-aware routing, and bounded failover.
-
-This is an actively developed project and not yet broadly adopted in production.
 
 ## What you get
 
@@ -35,15 +33,35 @@ This is an actively developed project and not yet broadly adopted in production.
 ## Quick Start
 
 1. Prerequisites: Docker + Compose (recommended), and at least one provider key.
-2. Install:
-Linux/macOS: `curl -fsSL https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.sh | sh`
-PowerShell: `irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex`
-3. Verify:
-`curl http://localhost:8000/healthz`
-`curl http://localhost:8000/readyz`
-`curl http://localhost:8000/v1/models`
+2. Install (pick one):
+
+Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.sh | sh
+```
+
+Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex
+```
+
+3. Verify service:
+
+```bash
+curl http://localhost:8000/healthz
+curl http://localhost:8000/readyz
+curl http://localhost:8000/v1/models
+```
+
 4. Send a request:
-`curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"`.
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
+```
 
 ### OpenAI SDK example
 
@@ -60,6 +78,14 @@ print(resp.choices[0].message.content)
 
 ## How It Works
 
+At a high level:
+
+- FreeLunch receives OpenAI-style requests on `/v1`.
+- It estimates request requirements (tokens/capabilities) and picks viable model candidates.
+- Candidates are ranked using health + performance + policy signals.
+- If a provider fails with retryable errors, FreeLunch fails over to alternates within bounded attempts.
+- Outcomes and telemetry are logged so operators can inspect behavior and tune settings.
+
 ```mermaid
 flowchart LR
     C["Client"] --> P["POST /v1/chat/completions"]
@@ -72,7 +98,7 @@ flowchart LR
     F --> A
 ```
 
-## UML (Project Model, Detailed)
+## Project Model
 
 ```mermaid
 classDiagram
@@ -166,6 +192,39 @@ classDiagram
 - `SPEC_GAP_REVIEW.md`: implementation alignment snapshot
 - `TASKS.md`: active backlog
 - `AGENTS.md`: agent execution guidance
+
+## Use With Other Clients
+
+Most OpenAI-compatible clients only need a base URL and model name.
+
+- Base URL: `http://localhost:8000/v1`
+- Model: `auto` (recommended default)
+- API key: many clients require a value; if so, use any placeholder unless your deployment enforces gateway auth
+
+If a client supports custom OpenAI endpoints, point it at FreeLunch and keep the rest of the workflow the same.
+
+## Logs And Important Options
+
+For less technical operators, these are the most useful controls:
+
+- Runtime logs:
+  - enabled by default
+  - set verbosity with `logging.runtime_verbosity: concise | verbose | debug`
+  - view in terminal/container logs
+- Request history:
+  - `GET /admin/logs`
+- Overall system health:
+  - `GET /admin/health`
+- Effective runtime config:
+  - `GET /admin/config`
+
+Common options worth knowing:
+
+- `providers.enabled`
+- `providers.<id>.enabled`
+- `providers.<id>.inference_enabled`
+- `routing.max_attempts`
+- `logging.runtime_verbosity`
 
 ## Quick Structure Snapshot
 
