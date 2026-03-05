@@ -10,8 +10,9 @@ Read these files first, in this order:
 2. `SPEC_GAP_REVIEW.md`
 3. `TASKS.md`
 4. `README.md`
-5. `OPERATIONS.md`
-6. `CONTRIBUTING.md`
+5. `IMPLEMENTATION_GUIDE.md`
+6. `OPERATIONS.md`
+7. `CONTRIBUTING.md`
 
 The spec is the target. The gap review is the current alignment snapshot. The task list is the actionable backlog.
 

@@ -859,6 +859,7 @@ The repository’s core documentation set is:
 - `SPEC_GAP_REVIEW.md`
 - `TASKS.md`
 - `README.md`
+- `IMPLEMENTATION_GUIDE.md`
 - `CONTRIBUTING.md`
 - `AGENTS.md`
 - `OPERATIONS.md`
@@ -917,6 +918,7 @@ Primary repository files:
 - `.github/workflows/release.yml`
 - `config.yaml.example`
 - `README.md`
+- `IMPLEMENTATION_GUIDE.md`
 - `CONTRIBUTING.md`
 - `OPERATIONS.md`
 - `AGENTS.md`

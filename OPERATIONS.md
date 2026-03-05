@@ -2,6 +2,8 @@
 
 This document is the operator-focused companion to [FREELUNCH_SPEC_v8.md](C:/Users/19Jes/dev/FreeLunch/FREELUNCH_SPEC_v8.md). It explains how to run, validate, observe, and maintain a FreeLunch deployment using the repository as it exists today.
 
+For implementation internals (module behavior, request pipeline, schema details), use `IMPLEMENTATION_GUIDE.md`.
+
 ## 1. Operational Model
 
 FreeLunch is a single-node service with:
@@ -539,6 +541,7 @@ When behavior changes materially, update:
 - `SPEC_GAP_REVIEW.md`
 - `TASKS.md`
 - `AGENTS.md`
+- `IMPLEMENTATION_GUIDE.md`
 - any operator-facing docs affected by the change
 
 ## 18. Recommended Validation Commands

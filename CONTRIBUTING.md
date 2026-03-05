@@ -8,14 +8,16 @@ Read these in order before making larger changes:
 2. `SPEC_GAP_REVIEW.md`
 3. `TASKS.md`
 4. `README.md`
-5. `AGENTS.md`
+5. `IMPLEMENTATION_GUIDE.md`
+6. `AGENTS.md`
 
 Use them together:
 
 - `FREELUNCH_SPEC_v8.md` is the full target behavior
 - `SPEC_GAP_REVIEW.md` is the current implementation-vs-spec snapshot
 - `TASKS.md` is the active backlog
-- `README.md` is the operator-facing runtime guide
+- `README.md` is the user-facing onboarding guide
+- `IMPLEMENTATION_GUIDE.md` is the technical implementation reference
 - `AGENTS.md` is the repo-specific engineering ruleset
 
 ## Project principles
@@ -202,6 +204,7 @@ Update docs in the same change whenever you alter:
 In practice, that usually means updating one or more of:
 
 - `README.md`
+- `IMPLEMENTATION_GUIDE.md`
 - `CONTRIBUTING.md`
 - `config.yaml.example`
 - `CHANGELOG.md`

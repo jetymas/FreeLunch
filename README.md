@@ -1,3 +1,96 @@
+## 🚀 FreeLunch (Production Quickstart)
+
+FreeLunch is a self-hosted, OpenAI-compatible gateway that gives your apps **one stable `/v1` endpoint** while it handles model/provider volatility, health-aware routing, and bounded failover.
+
+### Why teams use it
+
+- Simple client setup: one endpoint for OpenAI-compatible tooling
+- Safer routing: health/capability-aware candidate selection
+- Operational visibility: admin health/config/logs and durable telemetry
+- Low overhead: single-node design with SQLite + scheduler loops
+
+### Start in 5 minutes
+
+1. Prereqs: Docker + Compose (recommended), and at least one provider key.
+2. Install:
+Linux/macOS: `curl -fsSL https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.sh | sh`
+PowerShell: `irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex`
+3. Verify:
+`curl http://localhost:8000/healthz`
+`curl http://localhost:8000/readyz`
+`curl http://localhost:8000/v1/models`
+4. Send request:
+`curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"`.
+
+### System overview
+
+```mermaid
+flowchart LR
+    C[Client] --> P[/v1/chat/completions]
+    P --> T[Token + capability checks]
+    T --> R[Candidate selection]
+    R --> H[Health + score ordering]
+    H --> A[Provider adapter call]
+    A -->|success| O[Response + telemetry]
+    A -->|retryable error| F[Bounded failover]
+    F --> A
+```
+
+### UML (component model)
+
+```mermaid
+classDiagram
+    class FastAPIApp
+    class Proxy
+    class ProviderRegistry
+    class ProviderAdapter
+    class Database
+    class Discover
+    class Ranking
+    class Health
+    class Tokens
+    class RuntimeLogging
+
+    FastAPIApp --> Proxy
+    FastAPIApp --> ProviderRegistry
+    FastAPIApp --> Database
+    Proxy --> ProviderRegistry
+    Proxy --> Tokens
+    Proxy --> Database
+    Discover --> Database
+    Ranking --> Database
+    Health --> Database
+```
+
+### Documentation map
+
+- `README.md`: product overview + installation + first-use
+- `IMPLEMENTATION_GUIDE.md`: detailed technical internals (new canonical implementation reference)
+- `OPERATIONS.md`: operator runbook
+- `CONTRIBUTING.md`: contributor workflow
+- `FREELUNCH_SPEC_v8.md`: spec/policy target
+- `SPEC_GAP_REVIEW.md`: implementation alignment snapshot
+- `TASKS.md`: active backlog
+- `AGENTS.md`: agent execution guidance
+
+### Quick structure snapshot
+
+```text
+scripts/provider_smoke.py
+src/main.py
+src/proxy.py
+src/providers/*
+src/db.py
+src/health.py
+src/ranking.py
+src/tokens.py
+tests/*
+```
+
+---
+<details>
+<summary><strong>Legacy Deep Dive (Preserved)</strong></summary>
+
 <div align="center">
 
 # FreeLunch
@@ -894,3 +987,5 @@ MIT.
 ## Publishing note
 
 This README still uses `jetymas` as the publication token in example URLs. Replace it with the final GitHub owner or organization before public release.
+
+</details>
