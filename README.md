@@ -1,17 +1,40 @@
-## 🚀 FreeLunch (Production Quickstart)
+<div align="center">
 
-FreeLunch is a self-hosted, OpenAI-compatible gateway that gives your apps **one stable `/v1` endpoint** while it handles model/provider volatility, health-aware routing, and bounded failover.
+# FreeLunch
 
-### Why teams use it
+**A self-hosted, OpenAI-compatible gateway that routes requests to the best available model path.**
 
-- Simple client setup: one endpoint for OpenAI-compatible tooling
-- Safer routing: health/capability-aware candidate selection
-- Operational visibility: admin health/config/logs and durable telemetry
-- Low overhead: single-node design with SQLite + scheduler loops
+*There’s no such thing as a free lunch.*
 
-### Start in 5 minutes
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](./pyproject.toml)
+[![Docker](https://img.shields.io/badge/docker-supported-2496ED)](./docker-compose.yml)
+[![FastAPI](https://img.shields.io/badge/FastAPI-OpenAI--compatible-009688)](https://fastapi.tiangolo.com/)
 
-1. Prereqs: Docker + Compose (recommended), and at least one provider key.
+[Quick Start](#quick-start) · [How It Works](#how-it-works) · [UML](#uml-project-model-detailed) · [Docs Map](#documentation-map)
+
+</div>
+
+## Why this project exists
+
+Model/provider availability changes constantly. FreeLunch gives clients one stable `/v1` API while the gateway handles discovery, health-aware routing, and bounded failover.
+
+This is an actively developed project and not yet broadly adopted in production.
+
+## What you get
+
+| Capability | What it does |
+|---|---|
+| OpenAI-compatible gateway | Use standard chat/models client flows |
+| Health-aware routing | Prefer healthy/capable candidates |
+| Bounded failover | Retry alternates without unbounded loops |
+| Admin observability | `/admin/health`, `/admin/config`, `/admin/logs` |
+| Durable telemetry | Request/probe evidence in SQLite |
+| Low operational overhead | Single-node design with SQLite + scheduler loops |
+
+## Quick Start
+
+1. Prerequisites: Docker + Compose (recommended), and at least one provider key.
 2. Install:
 Linux/macOS: `curl -fsSL https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.sh | sh`
 PowerShell: `irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex`
@@ -19,41 +42,112 @@ PowerShell: `irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/instal
 `curl http://localhost:8000/healthz`
 `curl http://localhost:8000/readyz`
 `curl http://localhost:8000/v1/models`
-4. Send request:
+4. Send a request:
 `curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"`.
 
-### System overview
+### OpenAI SDK example
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+resp = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Give me a one-line summary of FreeLunch."}],
+)
+print(resp.choices[0].message.content)
+```
+
+## How It Works
 
 ```mermaid
 flowchart LR
-    C[Client] --> P[/v1/chat/completions]
-    P --> T[Token + capability checks]
-    T --> R[Candidate selection]
-    R --> H[Health + score ordering]
-    H --> A[Provider adapter call]
-    A -->|success| O[Response + telemetry]
-    A -->|retryable error| F[Bounded failover]
+    C["Client"] --> P["POST /v1/chat/completions"]
+    P --> T["Token + capability checks"]
+    T --> R["Candidate selection"]
+    R --> H["Health + score ordering"]
+    H --> A["Provider adapter call"]
+    A -->|success| O["Response + telemetry"]
+    A -->|retryable error| F["Bounded failover"]
     F --> A
 ```
 
-### UML (component model)
+## UML (Project Model, Detailed)
 
 ```mermaid
 classDiagram
-    class FastAPIApp
-    class Proxy
-    class ProviderRegistry
-    class ProviderAdapter
-    class Database
-    class Discover
-    class Ranking
-    class Health
-    class Tokens
-    class RuntimeLogging
+    class FastAPIApp {
+      +state.registry: ProviderRegistry
+      +state.settings: Settings
+      +state.db: Database
+      +startup()
+      +shutdown()
+      +recompute_readiness()
+    }
+    class Proxy {
+      +chat_completions(request)
+      +stream_chat_completions(request)
+      +admin_health()
+      +admin_config()
+      +admin_logs()
+    }
+    class ProviderRegistry {
+      +_providers: dict
+      +register_configured(settings)
+      +register(adapter, name)
+      +get(name)
+      +all()
+      +categorize_error(name, status, code, msg)
+    }
+    class ProviderAdapter {
+      <<interface>>
+      +name: str
+      +runtime_state()
+      +discover_models()
+      +chat_completions(body, model)
+      +stream_chat_completions(body, model)
+      +probe(model, max_tokens, timeout)
+      +categorize_error(status, code, message)
+    }
+    class Database {
+      +path: str
+      +writer: DBWriter
+      +init()
+      +read_conn()
+      +apply_migrations()
+    }
+    class Discover {
+      +run_discovery(db, providers)
+      +_upsert_models(rows)
+      +_deactivate_missing_models(provider_id)
+    }
+    class Ranking {
+      +run_ranking(db)
+      +compute_composite_score(model_row)
+    }
+    class Health {
+      +mark_success(model_id, latency, ttfb)
+      +mark_failure(model_id, category)
+      +run_health_cycle()
+      +get_probe_runtime_summary()
+    }
+    class Tokens {
+      +estimate_prompt_tokens(request, candidate)
+      +resolve_tokenizer_family(model_id, family)
+      +classify_content_type(text)
+      +heuristic_estimate(request, profile)
+    }
+    class RuntimeLogging {
+      +queue
+      +listener_thread
+      +emit(event, payload, level)
+      +configure(settings)
+    }
 
     FastAPIApp --> Proxy
     FastAPIApp --> ProviderRegistry
     FastAPIApp --> Database
+    FastAPIApp --> RuntimeLogging
     Proxy --> ProviderRegistry
     Proxy --> Tokens
     Proxy --> Database
@@ -62,18 +156,18 @@ classDiagram
     Health --> Database
 ```
 
-### Documentation map
+## Documentation Map
 
-- `README.md`: product overview + installation + first-use
-- `IMPLEMENTATION_GUIDE.md`: detailed technical internals (new canonical implementation reference)
+- `README.md`: user onboarding and day-1 usage
+- `IMPLEMENTATION_GUIDE.md`: deep technical internals (canonical implementation reference)
 - `OPERATIONS.md`: operator runbook
-- `CONTRIBUTING.md`: contributor workflow
+- `CONTRIBUTING.md`: developer workflow
 - `FREELUNCH_SPEC_v8.md`: spec/policy target
 - `SPEC_GAP_REVIEW.md`: implementation alignment snapshot
 - `TASKS.md`: active backlog
 - `AGENTS.md`: agent execution guidance
 
-### Quick structure snapshot
+## Quick Structure Snapshot
 
 ```text
 scripts/provider_smoke.py
