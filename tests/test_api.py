@@ -699,7 +699,9 @@ def test_chat_completions_returns_503_when_no_capability_compatible_models_exist
         "/v1/chat/completions",
         json={
             "model": "auto",
-            "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
+            "tools": [
+                {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}
+            ],
             "messages": [{"role": "user", "content": "call tool"}],
         },
     )

@@ -15,7 +15,9 @@ from src.providers.openai_compatible import (
 )
 
 
-def _response(status_code: int, *, json_body: Any = None, content: bytes | None = None) -> httpx.Response:
+def _response(
+    status_code: int, *, json_body: Any = None, content: bytes | None = None
+) -> httpx.Response:
     request = httpx.Request("GET", "https://api.example.com/test")
     if json_body is not None:
         return httpx.Response(status_code, json=json_body, request=request)

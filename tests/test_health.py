@@ -618,7 +618,9 @@ async def test_run_health_checks_returns_empty_counts_when_no_candidates(tmp_pat
     outcome = await run_health_checks(
         db,
         ProviderRegistry(),
-        Settings(health_max_probes_per_run=1, health_daily_request_budget_by_provider={"openrouter": 5}),
+        Settings(
+            health_max_probes_per_run=1, health_daily_request_budget_by_provider={"openrouter": 5}
+        ),
     )
     db.writer.stop()
 
@@ -693,7 +695,9 @@ async def test_run_health_checks_records_probe_exceptions_as_failures(tmp_path, 
     outcome = await run_health_checks(
         db,
         registry,
-        Settings(health_max_probes_per_run=1, health_daily_request_budget_by_provider={"openrouter": 5}),
+        Settings(
+            health_max_probes_per_run=1, health_daily_request_budget_by_provider={"openrouter": 5}
+        ),
     )
     db.writer.flush()
     with db.read_conn() as conn:
@@ -720,7 +724,9 @@ async def test_run_health_checks_records_probe_exceptions_as_failures(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_run_health_checks_deduplicates_candidates_across_probe_buckets(tmp_path, monkeypatch):
+async def test_run_health_checks_deduplicates_candidates_across_probe_buckets(
+    tmp_path, monkeypatch
+):
     db = Database(str(tmp_path / "health-dedup-buckets.db"))
     db.init()
     db.writer.start()
@@ -757,7 +763,9 @@ async def test_run_health_checks_deduplicates_candidates_across_probe_buckets(tm
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_health_check_deduplicates_fallback_and_respects_limit(tmp_path, monkeypatch):
+async def test_bootstrap_health_check_deduplicates_fallback_and_respects_limit(
+    tmp_path, monkeypatch
+):
     db = Database(str(tmp_path / "health-bootstrap.db"))
     db.init()
     db.writer.start()

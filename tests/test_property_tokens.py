@@ -40,7 +40,9 @@ _PROSE_VOCAB = (
 )
 
 
-def _no_exact_tokenizer(*, tokenizer_family: str | None = None, model_hint: str | None = None) -> None:
+def _no_exact_tokenizer(
+    *, tokenizer_family: str | None = None, model_hint: str | None = None
+) -> None:
     del tokenizer_family, model_hint
     return None
 
@@ -125,7 +127,10 @@ def _random_message(rng: random.Random) -> dict[str, Any]:
             {"type": "text", "text": _prose_text(rng, min_words=3, max_words=6)},
         ]
     else:
-        message["content"] = {"type": "input_text", "text": _prose_text(rng, min_words=5, max_words=9)}
+        message["content"] = {
+            "type": "input_text",
+            "text": _prose_text(rng, min_words=5, max_words=9),
+        }
 
     if rng.random() < 0.35:
         message["name"] = _rand_word(rng)
@@ -332,7 +337,10 @@ def test_property_vision_parts_have_fixed_increment_and_detection_invariants() -
         ]
         image_count = rng.randint(1, 3)
         image_parts = [
-            {"type": "image_url", "image_url": {"url": f"https://example.com/{rng.randint(1, 9999)}.png"}}
+            {
+                "type": "image_url",
+                "image_url": {"url": f"https://example.com/{rng.randint(1, 9999)}.png"},
+            }
             for _ in range(image_count)
         ]
 
@@ -379,14 +387,20 @@ def test_property_message_metadata_fields_are_monotonic() -> None:
                 {
                     "id": f"call_{_rand_word(r)}",
                     "type": "function",
-                    "function": {"name": _rand_word(r), "arguments": json.dumps({"q": _rand_word(r)})},
+                    "function": {
+                        "name": _rand_word(r),
+                        "arguments": json.dumps({"q": _rand_word(r)}),
+                    },
                 }
             ],
         ),
     ]
 
     for _ in range(120):
-        message: dict[str, Any] = {"role": "assistant", "content": _prose_text(rng, min_words=4, max_words=8)}
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": _prose_text(rng, min_words=4, max_words=8),
+        }
         previous = estimate_required_tokens(
             [message],
             safety_buffer=0.0,

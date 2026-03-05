@@ -212,12 +212,20 @@ def test_settings_coercion_helpers_and_env_bool(monkeypatch):
     ) == {"valid": {"x": 1}}
     assert Settings._coerce_string_list("not-a-list") == []
     assert Settings._coerce_provider_sections("not-a-mapping") == {}
-    assert Settings._coerce_provider_sections({"enabled": ["dummy"], "dummy": {"x": 1}, "nope": 1}) == {
-        "dummy": {"x": 1}
-    }
-    assert Settings._provider_from_probe_budget_key("health.daily_request_budget_by_provider.dummy") == "dummy"
-    assert Settings._provider_from_probe_budget_key("health.daily_request_budget_by_provider.") is None
-    assert Settings._provider_from_probe_budget_key("health.daily_request_budget_by_providerx.dummy") is None
+    assert Settings._coerce_provider_sections(
+        {"enabled": ["dummy"], "dummy": {"x": 1}, "nope": 1}
+    ) == {"dummy": {"x": 1}}
+    assert (
+        Settings._provider_from_probe_budget_key("health.daily_request_budget_by_provider.dummy")
+        == "dummy"
+    )
+    assert (
+        Settings._provider_from_probe_budget_key("health.daily_request_budget_by_provider.") is None
+    )
+    assert (
+        Settings._provider_from_probe_budget_key("health.daily_request_budget_by_providerx.dummy")
+        is None
+    )
 
     monkeypatch.delenv("TEST_SETTINGS_BOOL", raising=False)
     assert Settings._env_bool("TEST_SETTINGS_BOOL", 0) is False
