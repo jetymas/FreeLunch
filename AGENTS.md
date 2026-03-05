@@ -10,9 +10,11 @@ Read these files first, in this order:
 2. `SPEC_GAP_REVIEW.md`
 3. `TASKS.md`
 4. `README.md`
-5. `IMPLEMENTATION_GUIDE.md`
-6. `OPERATIONS.md`
-7. `CONTRIBUTING.md`
+5. `TESTING.md`
+6. `RELEASE_VALIDATION_MATRIX.md`
+7. `IMPLEMENTATION_GUIDE.md`
+8. `OPERATIONS.md`
+9. `CONTRIBUTING.md`
 
 The spec is the target. The gap review is the current alignment snapshot. The task list is the actionable backlog.
 
@@ -65,8 +67,9 @@ python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest
 Notes:
 
 - Repo-wide Ruff is configured to ignore vendored local dependency folders such as `.pydeps`.
-- Coverage is informative today; the repo does not yet enforce the intended spec target automatically.
+- Latest validated baseline is `418 passed` with `97.68%` total `src/` coverage; CI still enforces an 80% floor, so keep local/full-wave coverage checks in the workflow.
 - Python 3.14 test runs intentionally apply narrowly scoped third-party warning filters in `pyproject.toml` for known upstream asyncio deprecations in `fastapi.routing` and `pytest_asyncio.plugin`; do not broaden those filters without justification.
+- Pytest now sets `norecursedirs` for transient temp paths (`.pytest_tmp*`, `pytest_tmp*`, `pytest-cache-files-*`, `tests/tmp_*`) to avoid accidental local artifact collection failures.
 
 ## Multi-Agent Orchestration
 
@@ -74,28 +77,30 @@ Use parallel agents only when file ownership is clearly separable. The main inte
 
 ### Recommended current split
 
-Current phase: provider hardening and maintenance after first-wave onboarding
+Current phase: testing-depth hardening after hitting the 97% coverage target
 
 Phase A: safe to run in parallel
 
-- Agent `provider-hardening-tests`
-  Ownership: `tests/test_app.py`, `tests/test_api.py`, provider adapter suites
-  Current target: startup/readiness/routing regressions for mixed provider enablement and runtime capability
-- Agent `benchmark-maintenance`
-  Ownership: `src/benchmarks.py`, `tests/test_benchmarks.py`
-  Current target: resilient parsing/fetch behavior as upstream Arena/Open LLM artifacts drift
+- Agent `property-routing-tests`
+  Ownership: `tests/test_property_routing.py`
+  Current target: randomized routing invariants (bounded output, dedupe, fallback ordering, explicit-model precedence)
+- Agent `property-token-tests`
+  Ownership: `tests/test_property_tokens.py`
+  Current target: token-estimation invariants (non-negative, monotonic with extra content, multimodal guardrails)
+- Agent `stress-concurrency-tests`
+  Ownership: `tests/test_stress_concurrency.py`
+  Current target: probe budget and tokenizer-preload de-dup invariants under concurrent execution
 - Agent `docs-coordinator`
   Ownership: `FREELUNCH_SPEC_v8.md`, `SPEC_GAP_REVIEW.md`, `TASKS.md`, `AGENTS.md`, relevant README/OPERATIONS sections
-  Current target: keep docs aligned with implemented provider platform and maintenance posture
+  Current target: keep testing roadmap/spec-gap/task state aligned with landed validation evidence
 
 Phase B: run after Phase A lands or when those files are idle
 
 - Agent `provider-live-smoke` (optional/manual)
   Ownership: manual/integration scripts and docs only
-  Current target: gated non-CI smoke checks for provider modules with real API keys
+  Current target: gated non-CI smoke checks for provider modules with real API keys + outside-repo release matrix evidence
 
-Do not run `provider-hardening-tests` concurrently with any worker editing `tests/test_app.py`.
-Do not run `benchmark-maintenance` concurrently with other workers editing `src/benchmarks.py`.
+Do not run `stress-concurrency-tests` concurrently with other workers editing `tests/test_health.py`, `tests/test_tokens.py`, or scheduler-related suites.
 
 ### Ownership rules
 
@@ -128,6 +133,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Workers should run the smallest focused test set for their owned files.
 - The coordinator should run repo-wide `ruff`, `mypy`, and the relevant combined pytest subset after merging worker changes.
 - Run full-suite validation after every wave, not after every individual worker, unless the worker touched startup, routing, or persistence primitives.
+- Run full-suite pytest and full-suite coverage commands serially (not in parallel) to avoid non-deterministic benchmark-test interference in shared local environments.
 
 ### Coordination pitfalls
 
@@ -163,6 +169,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - OpenAI-prefixed GPT model IDs are now normalized into `tiktoken`-compatible names and family fallbacks before dropping to heuristics; preserve that provider-prefix stripping when changing `src/tokens.py`.
 - Successful Hugging Face tokenizer loads are cached in-process, but transient load failures are intentionally retried later instead of being cached as permanent misses; preserve that distinction when changing tokenizer loading behavior.
 - Discovery now best-effort schedules Hugging Face tokenizer preloads in the background, and uncached request-path sizing is allowed to fall back heuristically while preload is pending; preserve that non-blocking behavior unless you intentionally redesign token sizing.
+- Tokenizer preload scheduling now holds a single critical section for check+submit+future registration, so concurrent callers do not enqueue duplicate preloads; preserve that atomicity when editing `src/tokens.py`.
 - Background tokenizer preloads can be cancelled during shutdown; treat those as expected debug-only events rather than warning-level failures, and keep real preload-failure logs descriptive enough to include the exception type.
 - Request sizing now counts structured message metadata like `tool_calls`, `function_call`, `audio`, `name`, `tool_call_id`, and `refusal`; preserve that path when changing estimator behavior.
 - Heuristic fallback sizing is now calibrated by tokenizer family and broad content type (`prose`, `code`, `json`); if you change fallback estimation, keep the classifier and profile tables aligned with the regression tests in `tests/test_tokens.py`.
@@ -170,7 +177,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Discovery, ranking, and health scheduler intervals are runtime-configurable; if you change reload behavior, verify all three jobs are rescheduled consistently.
 - Log retention is enforced by the `maintenance` scheduler job using `logging.request_log_retention_days`; preserve that path when modifying request logging or scheduler registration.
 - `logging.request_log_enabled` and `logging.log_queue_size` now control low-priority client request logging without suppressing probe/bootstrap telemetry; preserve that distinction unless you intentionally redesign logging policy.
-- Runtime logs are separate from SQLite request telemetry. Keep `src/runtime_logging.py`, `/admin/health.runtime_logging`, `README.md`, `CONTRIBUTING.md`, `config.yaml.example`, and the runtime logging tests aligned whenever `logging.runtime_*` behavior changes.
+- Runtime logs are separate from SQLite request telemetry. Keep `src/runtime_logging.py`, the `runtime_logging` field in `GET /admin/health`, `README.md`, `CONTRIBUTING.md`, `config.yaml.example`, and the runtime logging tests aligned whenever `logging.runtime_*` behavior changes.
 - Runtime logging uses a queue-backed listener thread and three verbosity levels (`concise`, `verbose`, `debug`); debug mode is expected to be very chatty and should retain detailed scheduler, routing, probe, and tokenizer-resolution events.
 - The remaining tokenizer-family tail is now mostly closed-family models (Claude, Gemini, Grok, Nova, Router, plus unresolved `Other` entries) that expose official remote count APIs more readily than public local tokenizers; do not add request-path remote counter calls without an explicit design decision.
 - Under the current repo policy, treat the local-only token-estimation pipeline as complete and do not add tokenizer prewarming by default. Future work in this area should be evidence-driven calibration or safe local mapping extensions, not remote token-count API integration.
@@ -180,9 +187,12 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - `gateway.*` and `database.busy_timeout_ms` are now typed in `Settings`; if you change SQLite connection setup, keep `src/config.py`, `src/db.py`, and `tests/test_config.py` aligned.
 - Provider gating is now implemented in `Settings`/`ProviderRegistry`; keep `providers.enabled`, provider `enabled`, `discovery_enabled`, and `inference_enabled` semantics aligned across `src/config.py`, `src/main.py`, `src/providers/registry.py`, and `tests/test_app.py`.
 - Runtime probe controls are now provider-agnostic maps (`providers.<id>.active_probe_enabled` and `health.daily_request_budget_by_provider.<id>`). Preserve generic parsing/override behavior in `src/config.py` and `src/health.py`.
+- Active probe budget usage is now reserved atomically before awaiting probe calls; keep that lock-protected reservation path intact so concurrent probe batches cannot overshoot daily provider budgets.
+- Startup discovery-pipeline failures now degrade startup instead of terminating the process; preserve this behavior in `src/main.py` so restricted-egress/provider outages do not crash the gateway.
 - Provider onboarding is now module-driven; keep adding provider-specific logic inside `src/providers/*` instead of core orchestration paths.
 - Prefer shared OpenAI-compatible adapter abstractions for API-key providers over copy-paste adapter forks.
 - Keep OpenRouter behavior backward-compatible while platformization lands; treat regressions in current OpenRouter startup/discovery/routing behavior as P0 issues.
+- OpenRouter discovery now treats models as stream-capable by default because `supported_parameters` does not consistently include `"stream"` even when streaming works; preserve this unless OpenRouter publishes a stronger explicit capability contract.
 - Stream error parsing in `src/proxy.py` is now provider-agnostic via provider categorization callbacks; do not reintroduce direct provider-specific imports into proxy orchestration.
 - Ranking/discovery now support neutral `provider_rank` with legacy `openrouter_rank` fallback/backfill; preserve migration compatibility until legacy cleanup is explicitly approved.
 - OpenRouter readiness now depends on runtime capability, not just persisted rows: if there is no real API key and explicit dev-stub mode is off, startup/reload should deactivate OpenRouter rows and keep the registry non-routable.
@@ -192,7 +202,9 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - `get_token_estimation_review_summary()` should prefer request-time `selected_context_window` snapshots over live model metadata when analyzing context-failover recoveries; preserve that historical behavior when changing health review queries.
 - Benchmark-name normalization now lives in `src/benchmarks.py`; reuse it for cache refresh and discovery joins instead of reintroducing duplicate normalization logic.
 - Installer assets now live at repo root (`install.sh`, `uninstall.sh`, `install.ps1`, `uninstall.ps1`) and CI smoke-tests them with env-driven non-interactive inputs against a fake Docker shim; keep those env override paths working when changing installer prompts.
+- Installer runtime smoke also now supports local-image validation via `FREELUNCH_SKIP_PULL=true`; preserve that opt-in path in both shell and PowerShell installers for real-daemon CI/local smoke checks.
 - The Docker image smoke test intentionally sets `APP_ENV=dev` plus `OPENROUTER_DEV_STUB_ENABLED=true` so `/healthz` can validate app bootstrap without real provider credentials; do not silently change that CI assumption without updating the workflow and docs together.
+- Local secret files are intentionally ignored (`.env`, `.env.*`, `.testkey`, `.envrc`) while `.env.example` remains tracked; preserve that guardrail.
 - Manual provider validation now uses `scripts/provider_smoke.py`; keep it non-CI, budget-aware, and independent from app startup behavior.
 - Dependency warning hygiene is now tied to upgraded baselines in `requirements.txt`/`requirements-dev.txt`; when changing those pins, re-check Python 3.14 warning behavior before adjusting filters.
 
@@ -209,9 +221,13 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Spec target: `FREELUNCH_SPEC_v8.md`
 - Current alignment snapshot: `SPEC_GAP_REVIEW.md`
 - Active backlog: `TASKS.md`
+- Testing strategy: `TESTING.md`
+- Release sign-off matrix: `RELEASE_VALIDATION_MATRIX.md`
+- Release sign-off evidence: `RELEASE_VALIDATION_EVIDENCE.md`
 - Dev workflow: `CONTRIBUTING.md`
 - Runtime defaults: `config.yaml.example`, `.env.example`
 - Operator runbook: `OPERATIONS.md`
 - Manual live-provider smoke harness: `scripts/provider_smoke.py`
 - Behavior examples: `tests/test_api.py`, `tests/test_app.py`, `tests/test_health.py`, `tests/test_routing.py`
+- Property/stress examples: `tests/test_property_routing.py`, `tests/test_property_tokens.py`, `tests/test_stress_concurrency.py`
 - Provider-boundary examples: `tests/test_openrouter.py`

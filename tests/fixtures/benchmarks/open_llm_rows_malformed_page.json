@@ -1,0 +1,18 @@
+[
+  "not-a-dict-wrapper",
+  {
+    "row": "not-a-dict-row"
+  },
+  {
+    "row": {
+      "fullname": "model-good",
+      "Average normalized": "91.1"
+    }
+  },
+  {
+    "row": {
+      "fullname": "",
+      "Average": 100
+    }
+  }
+]

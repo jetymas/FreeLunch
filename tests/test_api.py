@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from src.providers.base import ChatResult, ProviderFatalError, ProviderRetryableError, StreamResult
 from src.providers.openai import OpenAIAdapter
 from src.providers.openrouter import OpenRouterAdapter
@@ -147,6 +149,95 @@ def test_chat_completions_returns_auth_error_without_failover(client, monkeypatc
     assert response.status_code == 401
 
 
+def test_v1_endpoints_reject_invalid_bearer_token(client, monkeypatch):
+    client.app.state.settings.gateway_api_key = "secret"
+    called = {"chat": 0}
+
+    async def fake_chat(self, request_body, model):
+        called["chat"] += 1
+        return ChatResult(
+            payload={"id": "chatcmpl-test", "object": "chat.completion", "model": model}
+        )
+
+    monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
+
+    models_response = client.get("/v1/models", headers={"Authorization": "Bearer wrong"})
+    assert models_response.status_code == 401
+    assert models_response.json()["detail"] == "invalid bearer token"
+
+    chat_response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer wrong"},
+        json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert chat_response.status_code == 401
+    assert chat_response.json()["detail"] == "invalid bearer token"
+    assert called["chat"] == 0
+
+
+def test_chat_completions_fails_over_on_unexpected_exception(client, monkeypatch):
+    _insert_backup_model(
+        client,
+        model_id="openrouter/nonstream-backup",
+        provider_model_id="nonstream-backup",
+    )
+
+    async def fail_then_succeed(self, request_body, model):
+        if model == "openrouter/free":
+            raise RuntimeError("non-stream transport exploded")
+        return ChatResult(
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "backup non-stream reply"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fail_then_succeed)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["model"] == "nonstream-backup"
+
+    db = client.app.state.db
+    db.writer.flush()
+    with db.read_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT selected_model_id, attempt_index, was_fallback, success, gateway_error_category, error_message
+            FROM request_log
+            WHERE request_source='client'
+            ORDER BY id DESC
+            LIMIT 2
+            """
+        ).fetchall()
+        failure_state = conn.execute(
+            "SELECT consecutive_failures FROM models WHERE id='openrouter/openrouter/free'"
+        ).fetchone()
+
+    assert len(rows) == 2
+    assert rows[0]["selected_model_id"] == "openrouter/nonstream-backup"
+    assert rows[0]["attempt_index"] == 1
+    assert rows[0]["was_fallback"] == 1
+    assert rows[0]["success"] == 1
+    assert rows[1]["selected_model_id"] == "openrouter/openrouter/free"
+    assert rows[1]["attempt_index"] == 0
+    assert rows[1]["success"] == 0
+    assert rows[1]["gateway_error_category"] == "PROVIDER_UNAVAILABLE"
+    assert "non-stream transport exploded" in (rows[1]["error_message"] or "")
+    assert failure_state is not None
+    assert failure_state["consecutive_failures"] == 1
+
+
 def test_chat_completions_fails_over_to_next_candidate_on_retryable_error(client, monkeypatch):
     _insert_backup_model(client)
 
@@ -259,6 +350,47 @@ def test_request_preference_headers_can_be_disabled(client, monkeypatch):
     response = client.post(
         "/v1/chat/completions",
         headers={"X-Gateway-Preference": "latency", "X-Gateway-Max-Latency-Ms": "500"},
+        json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["model"] == "openrouter/free"
+
+
+def test_invalid_request_preference_header_falls_back_to_balanced(client, monkeypatch):
+    _insert_backup_model(
+        client,
+        model_id="openrouter/model-fast-invalid-pref",
+        provider_model_id="model-fast-invalid-pref",
+    )
+    db = client.app.state.db
+    db.writer.enqueue(
+        "UPDATE models SET composite_score=80.0, avg_latency_ms=3000 WHERE id='openrouter/openrouter/free'"
+    )
+    db.writer.enqueue(
+        "UPDATE models SET composite_score=60.0, avg_latency_ms=50 WHERE id='openrouter/model-fast-invalid-pref'"
+    )
+    db.writer.flush()
+
+    async def fake_chat(self, request_body, model):
+        return ChatResult(
+            payload={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": model},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fake_chat)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"X-Gateway-Preference": "not-a-real-preference"},
         json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert response.status_code == 200
@@ -538,6 +670,44 @@ def test_context_exceeded_returns_400_without_penalizing_model_health(client, mo
     assert log_row["gateway_error_category"] == "CONTEXT_EXCEEDED"
 
 
+@pytest.mark.parametrize(
+    ("category", "expected_status"),
+    [
+        ("INVALID_REQUEST", 400),
+        ("RATE_LIMITED", 429),
+        ("PROVIDER_UNAVAILABLE", 502),
+    ],
+)
+def test_non_retryable_provider_error_category_maps_to_expected_status(
+    client, monkeypatch, category, expected_status
+):
+    async def fail_chat(self, request_body, model):
+        raise ProviderFatalError("fatal provider failure", category=category)
+
+    monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fail_chat)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == expected_status
+    assert response.json()["detail"] == "fatal provider failure"
+
+
+def test_chat_completions_returns_503_when_no_capability_compatible_models_exist(client):
+    _update_model(client, "openrouter/openrouter/free", supports_tools=0)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
+            "messages": [{"role": "user", "content": "call tool"}],
+        },
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "No routable healthy model found"
+    assert response.headers["retry-after"] == "10"
+
+
 def test_stream_error_categorization_uses_openai_compatible_provider_contract(client, monkeypatch):
     db = client.app.state.db
     db.writer.enqueue("UPDATE models SET is_active=0 WHERE provider_id='openrouter'")
@@ -599,3 +769,244 @@ def test_stream_error_categorization_uses_openai_compatible_provider_contract(cl
     assert logs[0]["provider_id"] == "openai"
     assert logs[0]["was_streaming"] is True
     assert logs[0]["gateway_error_category"] == "RATE_LIMITED"
+
+
+def test_stream_fails_over_when_first_candidate_ends_before_non_comment_frame(client, monkeypatch):
+    _insert_backup_model(
+        client,
+        model_id="openrouter/stream-backup-edge",
+        provider_model_id="stream-backup-edge",
+    )
+
+    async def fail_before_payload_then_stream(self, request_body, model):
+        if model == "openrouter/free":
+
+            async def only_keepalive():
+                yield b": keepalive\n\n"
+
+            return StreamResult(events=only_keepalive())
+
+        async def backup_stream():
+            yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"backup-stream"},"finish_reason":null}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        return StreamResult(events=backup_stream())
+
+    monkeypatch.setattr(
+        OpenRouterAdapter, "stream_chat_completions", fail_before_payload_then_stream
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert response.status_code == 200
+    assert '"content":"backup-stream"' in response.text
+
+    db = client.app.state.db
+    db.writer.flush()
+    with db.read_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT selected_model_id, attempt_index, was_fallback, success, gateway_error_category, error_message
+            FROM request_log
+            WHERE request_source='client'
+            ORDER BY id DESC
+            LIMIT 2
+            """
+        ).fetchall()
+        failure_state = conn.execute(
+            "SELECT consecutive_failures FROM models WHERE id='openrouter/openrouter/free'"
+        ).fetchone()
+
+    assert len(rows) == 2
+    assert rows[0]["selected_model_id"] == "openrouter/stream-backup-edge"
+    assert rows[0]["attempt_index"] == 1
+    assert rows[0]["was_fallback"] == 1
+    assert rows[0]["success"] == 1
+    assert rows[1]["selected_model_id"] == "openrouter/openrouter/free"
+    assert rows[1]["attempt_index"] == 0
+    assert rows[1]["success"] == 0
+    assert rows[1]["gateway_error_category"] == "PROVIDER_UNAVAILABLE"
+    assert "provider stream ended before first event" in (rows[1]["error_message"] or "")
+    assert failure_state is not None
+    assert failure_state["consecutive_failures"] == 1
+
+
+def test_stream_midstream_unexpected_exception_is_logged_without_failover(client, monkeypatch):
+    _insert_backup_model(
+        client,
+        model_id="openrouter/stream-backup-unused",
+        provider_model_id="stream-backup-unused",
+    )
+    backup_attempts = {"count": 0}
+
+    async def stream_then_raise(self, request_body, model):
+        if model == "stream-backup-unused":
+            backup_attempts["count"] += 1
+
+            async def backup_stream():
+                yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"backup-should-not-run"},"finish_reason":null}]}\n\n'
+                yield b"data: [DONE]\n\n"
+
+            return StreamResult(events=backup_stream())
+
+        async def broken_stream():
+            yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
+            raise RuntimeError("mid-stream transport broke")
+
+        return StreamResult(events=broken_stream())
+
+    monkeypatch.setattr(OpenRouterAdapter, "stream_chat_completions", stream_then_raise)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert response.status_code == 200
+    assert '"content":"partial"' in response.text
+    assert "data: [DONE]" not in response.text
+    assert backup_attempts["count"] == 0
+
+    logs = client.get("/admin/logs?limit=2").json()["logs"]
+    assert logs[0]["success"] is False
+    assert logs[0]["was_streaming"] is True
+    assert logs[0]["gateway_error_category"] == "PROVIDER_UNAVAILABLE"
+    assert "mid-stream transport broke" in (logs[0]["error_message"] or "")
+
+
+def test_stream_without_done_appends_done_and_logs_usage_from_first_chunk(client, monkeypatch):
+    async def stream_without_done(self, request_body, model):
+        async def gen():
+            yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}],"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}\n\n'
+
+        return StreamResult(events=gen())
+
+    monkeypatch.setattr(OpenRouterAdapter, "stream_chat_completions", stream_without_done)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert response.status_code == 200
+    assert '"content":"first"' in response.text
+    assert response.text.count("data: [DONE]") == 1
+
+    db = client.app.state.db
+    db.writer.flush()
+    with db.read_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT prompt_tokens, completion_tokens, total_tokens, success
+            FROM request_log
+            WHERE request_source='client'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert row["prompt_tokens"] == 11
+    assert row["completion_tokens"] == 4
+    assert row["total_tokens"] == 15
+    assert row["success"] == 1
+
+
+def test_stream_uses_latest_usage_chunk_when_provider_omits_done_frame(client, monkeypatch):
+    async def stream_with_usage_update(self, request_body, model):
+        async def gen():
+            yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}]}\n\n'
+            yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"second"},"finish_reason":null}],"usage":{"prompt_tokens":21,"completion_tokens":7,"total_tokens":28}}\n\n'
+
+        return StreamResult(events=gen())
+
+    monkeypatch.setattr(OpenRouterAdapter, "stream_chat_completions", stream_with_usage_update)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert response.status_code == 200
+    assert '"content":"first"' in response.text
+    assert '"content":"second"' in response.text
+    assert response.text.count("data: [DONE]") == 1
+
+    db = client.app.state.db
+    db.writer.flush()
+    with db.read_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT prompt_tokens, completion_tokens, total_tokens, success
+            FROM request_log
+            WHERE request_source='client'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert row["prompt_tokens"] == 21
+    assert row["completion_tokens"] == 7
+    assert row["total_tokens"] == 28
+    assert row["success"] == 1
+
+
+def test_stream_midstream_non_retryable_provider_error_does_not_mark_model_failure(
+    client, monkeypatch
+):
+    async def stream_then_fatal(self, request_body, model):
+        async def broken_stream():
+            yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
+            raise ProviderFatalError("mid-stream invalid payload", category="INVALID_REQUEST")
+
+        return StreamResult(events=broken_stream())
+
+    monkeypatch.setattr(OpenRouterAdapter, "stream_chat_completions", stream_then_fatal)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert response.status_code == 200
+    assert '"content":"partial"' in response.text
+    assert "data: [DONE]" not in response.text
+
+    db = client.app.state.db
+    db.writer.flush()
+    with db.read_conn() as conn:
+        latest_log = conn.execute(
+            """
+            SELECT success, gateway_error_category, error_message
+            FROM request_log
+            WHERE request_source='client'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        model_state = conn.execute(
+            "SELECT consecutive_failures FROM models WHERE id='openrouter/openrouter/free'"
+        ).fetchone()
+
+    assert latest_log is not None
+    assert latest_log["success"] == 0
+    assert latest_log["gateway_error_category"] == "INVALID_REQUEST"
+    assert "mid-stream invalid payload" in (latest_log["error_message"] or "")
+    assert model_state is not None
+    assert model_state["consecutive_failures"] == 0

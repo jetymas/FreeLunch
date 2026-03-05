@@ -216,6 +216,45 @@ async def test_chat_completions_extracts_usage(monkeypatch):
     assert result.ttfb_ms == result.latency_ms
 
 
+@pytest.mark.asyncio
+async def test_discover_models_normalizes_invalid_json_to_retryable_error(monkeypatch):
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    async def fake_request(self, method, path, *, json_body=None, timeout_seconds):
+        assert method == "GET"
+        assert path == "/models"
+        return _response(200, content=b"{bad json")
+
+    monkeypatch.setattr(OpenAIAdapter, "_request_with_retries", fake_request)
+
+    with pytest.raises(ProviderRetryableError) as exc_info:
+        await adapter.discover_models()
+
+    assert str(exc_info.value) == "provider returned invalid json"
+    assert exc_info.value.category == "PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_normalizes_invalid_json_to_retryable_error(monkeypatch):
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    async def fake_request(self, method, path, *, json_body=None, timeout_seconds):
+        assert method == "POST"
+        assert path == "/chat/completions"
+        return _response(200, content=b"{bad json")
+
+    monkeypatch.setattr(OpenAIAdapter, "_request_with_retries", fake_request)
+
+    with pytest.raises(ProviderRetryableError) as exc_info:
+        await adapter.chat_completions(
+            {"messages": [{"role": "user", "content": "hello"}]},
+            model="gpt-test",
+        )
+
+    assert str(exc_info.value) == "provider returned invalid json"
+    assert exc_info.value.category == "PROVIDER_UNAVAILABLE"
+
+
 class _FakeStreamingResponse:
     def __init__(
         self,
@@ -293,6 +332,44 @@ async def test_stream_chat_completions_merges_events_and_ignores_comments(monkey
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_completions_flushes_pending_event_on_eof(monkeypatch):
+    adapter = OpenAIAdapter(api_key="test-key")
+    response = _FakeStreamingResponse(
+        lines=['data: {"choices":[{"delta":{"content":"tail"}}]}'],
+    )
+    client = _FakeStreamingClient(response)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: client)
+
+    result = await adapter.stream_chat_completions(
+        {"messages": [{"role": "user", "content": "hello"}]},
+        model="gpt-test",
+    )
+    events = [event async for event in result.events]
+
+    assert events == [b'data: {"choices":[{"delta":{"content":"tail"}}]}\n\n']
+    assert response.closed is True
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_completions_keepalive_only_stream_yields_no_events(monkeypatch):
+    adapter = OpenAIAdapter(api_key="test-key")
+    response = _FakeStreamingResponse(lines=[": ping", ": keepalive", ""])
+    client = _FakeStreamingClient(response)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: client)
+
+    result = await adapter.stream_chat_completions(
+        {"messages": [{"role": "user", "content": "hello"}]},
+        model="gpt-test",
+    )
+    events = [event async for event in result.events]
+
+    assert events == []
+    assert response.closed is True
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_completions_maps_error_response_before_streaming(monkeypatch):
     adapter = OpenAIAdapter(api_key="test-key")
     response = _FakeStreamingResponse(
@@ -342,6 +419,58 @@ async def test_request_with_retries_retries_timeout_then_succeeds(monkeypatch):
 
     assert response.status_code == 200
     assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_request_with_retries_preserves_timeout_cause_after_exhaustion(monkeypatch):
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, json=None):
+            raise httpx.TimeoutException("timed out")
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(ProviderRetryableError) as exc_info:
+        await adapter._request_with_retries("GET", "/models", timeout_seconds=15)
+
+    assert str(exc_info.value) == "provider timeout"
+    assert isinstance(exc_info.value.__cause__, httpx.TimeoutException)
+
+
+@pytest.mark.asyncio
+async def test_request_with_retries_preserves_transport_cause_after_exhaustion(monkeypatch):
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, json=None):
+            raise httpx.HTTPError("socket closed")
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(ProviderRetryableError) as exc_info:
+        await adapter._request_with_retries("GET", "/models", timeout_seconds=15)
+
+    assert str(exc_info.value) == "provider transport error"
+    assert isinstance(exc_info.value.__cause__, httpx.HTTPError)
 
 
 @pytest.mark.asyncio
@@ -432,9 +561,7 @@ def test_registry_register_configured_loads_openai_compatible_module_factories(m
     )
     provider_enabled = {provider_id: True for provider_id in provider_ids}
     provider_enabled["openrouter"] = False
-    provider_bootstrap_config = {
-        provider_id: {} for provider_id in provider_ids
-    }
+    provider_bootstrap_config = {provider_id: {} for provider_id in provider_ids}
     provider_bootstrap_config["xai"] = {
         "api_key_env": "XAI_CUSTOM_KEY",
         "api_base": "https://custom.x.ai/v1",

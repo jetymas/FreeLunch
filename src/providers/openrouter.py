@@ -174,9 +174,9 @@ class OpenRouterAdapter:
                     "max_output_tokens": max_completion_tokens,
                     "tokenizer_family": tokenizer_family,
                     "supports_tools": 1 if "tools" in supported_parameters else 0,
-                    "supports_streaming": 1
-                    if "stream" in supported_parameters or not supported_parameters
-                    else 0,
+                    # OpenRouter's supported_parameters is not a strict stream-capability contract.
+                    # Some free models stream correctly even when "stream" is omitted.
+                    "supports_streaming": 1,
                     "supports_vision": 1 if "image" in input_modalities else 0,
                     "supports_structured_output": 1
                     if self._supports_structured_output(supported_parameters)

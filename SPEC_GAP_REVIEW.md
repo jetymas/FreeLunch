@@ -6,6 +6,11 @@ The codebase is now a **feature-complete implementation for the accepted OpenRou
 
 The approved module-only provider-platform objective is now implemented for the first API-key wave: providers can be onboarded via `src/providers/<id>.py` plus config enablement without adding provider-specific logic to `src/main.py`, `src/proxy.py`, or `src/health.py`.
 
+March 2026 pre-public validation pass: `ruff`/`mypy` are clean, focused runtime integration tests pass, and full-suite + coverage validation now passes at `418 passed` with `97.68%` total `src/` line coverage.
+Wave A and Wave B testing expansions landed (runtime/proxy/routing/provider/registry edge branches, benchmark fixture corpus + benchmark edge branches, scheduler branch-depth suite, token edge-gate/fallback coverage, discovery edge/invariant coverage). Wave C coverage-closure then landed for `proxy`, `openai_compatible`, `config`, `health`, and `runtime_logging`, followed by Wave D hard-test additions (property and stress/concurrency suites).
+
+Quality target update (March 2026): repository policy targets **97%+** line coverage plus deeper hard-test modes (fault injection, property-based/stress, and stronger outside-repo validation). The coverage target is now met; remaining work is depth/realism oriented.
+
 ## What is already in place
 
 - FastAPI app bootstrap with lifespan startup/shutdown wiring, readiness gating, and scheduler registration.
@@ -70,9 +75,11 @@ Residual work:
 
 - Success updates now maintain rolling `avg_latency_ms` / `avg_ttfb_ms` values instead of overwriting them with the newest sample, which better matches ranking/health intent without expanding the schema.
 - Probe selection covers cooldown recovery, never-probed models, and stale models, but provider-specific probe policy objects and optional exploration sampling are still absent.
+- Probe execution now reserves provider budget atomically under concurrency, preventing budget overshoot in parallel probe batches.
 - `/admin/health` now exposes probe-budget usage, probe policy/runtime state, next-candidate previews with explicit probe reasons, and recent probe/bootstrap activity in addition to bootstrap state, queue depth, provider summaries, scheduler job status, and recent model errors.
 - Request-log retention is now configurable and pruned by a daily maintenance job, and `logging.request_log_enabled` / `logging.log_queue_size` now affect low-priority client request logging at runtime.
 - Queue-backed JSON runtime logging now runs through a separate listener thread with `concise`, `verbose`, and `debug` modes, and `/admin/health` surfaces `runtime_logging` status including queue depth and dropped-record counts.
+- Tokenizer preload scheduling now uses an atomic check+submit critical section, preventing duplicate preload submissions under concurrent request pressure.
 - The remaining gap in this area is now mostly about optional probe-policy sophistication rather than missing operator visibility.
 
 ### 4) Configuration/runtime parity is effectively in place for the currently shipped feature set (low residual risk)
@@ -97,16 +104,30 @@ Residual work:
 - CI also now exercises Python 3.14 explicitly alongside the older supported versions.
 - Test/dependency hygiene on Python 3.14 was improved by upgrading FastAPI/Starlette/pytest/pytest-asyncio baselines and applying narrowly scoped pytest warning filters for known third-party asyncio deprecations still present upstream.
 - CI now validates installer assets syntactically (`sh -n`, ShellCheck, and PowerShell parser checks) and runs non-interactive shell/PowerShell smoke tests against a fake Docker shim.
-- Current measured line coverage is now **90%**, above the original 80% target, and direct `src/providers/openrouter.py` coverage is now materially stronger after dedicated retry/stream/error-body tests.
+- Docker smoke in CI now runs auth-on, budget-zero checks for `/healthz`, `/readyz`, `/v1/models` (401 and 200 behavior), and tiny authenticated non-stream + stream chat requests in dev-stub mode.
+- CI now also runs a real-daemon Linux installer runtime smoke (`install.sh` + compose runtime + authenticated API checks + uninstall cleanup) using a local built image and `FREELUNCH_SKIP_PULL=true`.
+- Current measured line coverage is now **97.68%** (`418 passed` full-suite coverage run), above both the original 80% floor and the updated 97% target.
 - `release.yml` now performs a multi-arch GHCR build with GHA cache, semver tag expansion, and GitHub release publishing.
 - `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, and the new `OPERATIONS.md` now give materially better operator and maintainer coverage than earlier revisions.
 - Section 15 installer assets are now present: `install.sh`, `uninstall.sh`, `install.ps1`, `uninstall.ps1`.
+- Installer defaults and docs are now aligned on lowercase GHCR image names, and PowerShell install now fails fast on `docker pull` / `docker compose up` failure rather than printing false-success summaries.
+- Secret-hygiene guardrails now explicitly ignore `.env` / `.env.*` (while preserving `.env.example`) and add key-handling guidance in user-facing docs.
+- Pytest now ignores transient `tests/tmp_*` folders to avoid accidental local temp-directory collection failures.
+
+### 7) Test-depth and runtime-realism follow-through (closed for current release)
+
+- Coverage target remains met (`97.68%`), and high-risk core modules have materially deeper edge-path coverage.
+- Property-based routing/token invariant suites and stress/concurrency suites are now landed, and they surfaced/fixed real concurrency bugs in probe budgeting and tokenizer-preload de-duplication.
+- Manual sign-off checklist is codified in `RELEASE_VALIDATION_MATRIX.md`.
+- Execution evidence lives in `RELEASE_VALIDATION_EVIDENCE.md`: M1/M2/M4/M5/M6/M7/M8 are complete, and M3 (macOS installer path) is explicitly accepted as blocked/waived by project owner due host unavailability.
+- Dedicated execution plan remains in `TESTING.md` for future cross-host follow-through.
 
 ## Suggested implementation order (re-baselined)
 
-1. **Provider hardening wave**: expand multi-provider startup/readiness/routing regressions for mixed enablement and key-availability cases.
-2. **Benchmark-ingestion maintenance**: keep Chatbot Arena/Open LLM parsers aligned with upstream artifact drift.
-3. **Operator/docs maintenance**: keep provider onboarding, config examples, and runbook guidance synchronized with implementation.
+1. **Testing Excellence Wave A**: runtime + provider hard-branch closures.
+2. **Testing Excellence Wave B**: benchmark/scheduler/token branch-depth expansion.
+3. **Testing Excellence Wave C**: property-based and stress/fault-injection suites (landed).
+4. **Testing Excellence Wave D**: outside-repo runtime/installer/auth validation hardening (landed for this release; macOS run explicitly waived).
 
 ## Notes
 

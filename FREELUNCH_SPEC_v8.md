@@ -642,7 +642,7 @@ The gateway persists and summarizes:
 - provider-reported prompt tokens when available
 - context-exceeded outcomes
 
-`/admin/health.token_estimation_review` is diagnostic and review-oriented only.
+`GET /admin/health` includes `token_estimation_review`, which is diagnostic and review-oriented only.
 
 It must not automatically enable new tokenizer support.
 
@@ -704,7 +704,7 @@ Request telemetry must be sufficient to support:
 
 ### 13.4 Runtime Logging Status
 
-`/admin/health.runtime_logging` must include at least:
+`GET /admin/health` must include a `runtime_logging` object with at least:
 
 - enabled state
 - configured verbosity
@@ -837,7 +837,13 @@ The repository should maintain coverage over:
 
 ### 18.2 Current Quality Bar
 
-The repository currently enforces an 80% coverage floor in CI and materially exceeds it.
+The repository’s target quality bar is now:
+
+- **97%+ line coverage** for `src/`
+- increasing branch-depth in high-risk modules
+- explicit hard-test coverage (fault-injection, property-based, stress/concurrency, and outside-repo validation)
+
+Coverage remains a floor metric; acceptance requires depth across failure and edge behaviors, not only additional line execution.
 
 ### 18.3 Live Validation
 
@@ -851,6 +857,10 @@ The repository now includes an optional non-CI harness (`scripts/provider_smoke.
 
 Live checks should remain minimal and budget-aware.
 
+### 18.4 Enforcement Migration
+
+Coverage enforcement may be raised in staged gates during migration, but the accepted end-state requirement is 97%+.
+
 ## 19. Documentation Requirements
 
 The repository’s core documentation set is:
@@ -859,6 +869,9 @@ The repository’s core documentation set is:
 - `SPEC_GAP_REVIEW.md`
 - `TASKS.md`
 - `README.md`
+- `TESTING.md`
+- `RELEASE_VALIDATION_MATRIX.md`
+- `RELEASE_VALIDATION_EVIDENCE.md`
 - `IMPLEMENTATION_GUIDE.md`
 - `CONTRIBUTING.md`
 - `AGENTS.md`

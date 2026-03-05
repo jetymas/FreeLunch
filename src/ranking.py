@@ -124,9 +124,7 @@ def recompute_ranking(db: Database, settings: Settings | None = None) -> int:
     context_values = [int(row[9] or 0) for row in rows]
     latency_candidates = []
     usage_ranks = [
-        rank
-        for row in rows
-        if (rank := _effective_provider_rank(row[14], row[15])) is not None
+        rank for row in rows if (rank := _effective_provider_rank(row[14], row[15])) is not None
     ]
     now_iso = utc_now_iso()
 

@@ -835,6 +835,7 @@ async def _run_probe_batch(
     utc_day = _utc_day()
     budget_usage: dict[str, int] = {}
     semaphore = asyncio.Semaphore(settings.health_probe_concurrency)
+    budget_lock = asyncio.Lock()
 
     async def probe_one(candidate: dict[str, Any]) -> None:
         provider_id = str(candidate["provider_id"])
@@ -849,22 +850,6 @@ async def _run_probe_batch(
                 provider_id=provider_id,
                 model_id=str(candidate["id"]),
                 reason="provider_disabled",
-            )
-            return
-
-        budget_limit = settings.health_daily_request_budget_by_provider.get(provider_id, 0)
-        budget_usage.setdefault(provider_id, get_provider_probe_usage(db, provider_id, utc_day))
-        if budget_limit <= budget_usage[provider_id]:
-            counts["skipped"] += 1
-            runtime_log(
-                logger,
-                "health.probe.skipped",
-                verbosity="debug",
-                message="Skipped probe because daily budget is exhausted",
-                request_source=request_source,
-                provider_id=provider_id,
-                model_id=str(candidate["id"]),
-                reason="budget_exhausted",
             )
             return
 
@@ -898,6 +883,25 @@ async def _run_probe_batch(
             )
             return
 
+        async with budget_lock:
+            budget_limit = settings.health_daily_request_budget_by_provider.get(provider_id, 0)
+            budget_usage.setdefault(provider_id, get_provider_probe_usage(db, provider_id, utc_day))
+            if budget_limit <= budget_usage[provider_id]:
+                counts["skipped"] += 1
+                runtime_log(
+                    logger,
+                    "health.probe.skipped",
+                    verbosity="debug",
+                    message="Skipped probe because daily budget is exhausted",
+                    request_source=request_source,
+                    provider_id=provider_id,
+                    model_id=str(candidate["id"]),
+                    reason="budget_exhausted",
+                )
+                return
+            # Reserve budget before yielding so concurrent candidates cannot overrun limits.
+            budget_usage[provider_id] += 1
+
         async with semaphore:
             counts["probed"] += 1
             request_id = f"{request_source}-{candidate['id']}-{counts['probed']}"
@@ -919,7 +923,6 @@ async def _run_probe_batch(
                     timeout_seconds=settings.health_probe_timeout_seconds,
                 )
                 probed_at = utc_now_iso()
-                budget_usage[provider_id] += 1
                 mark_success(
                     db,
                     str(candidate["id"]),
@@ -958,7 +961,6 @@ async def _run_probe_batch(
                     ttfb_ms=result.ttfb_ms,
                 )
             except Exception as exc:
-                budget_usage[provider_id] += 1
                 mark_failure(db, str(candidate["id"]), str(exc), settings=settings)
                 db.writer.enqueue(
                     """

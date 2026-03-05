@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import pickle
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -10,15 +13,25 @@ from src.config import Settings
 from src.db import Database
 from src.discover import run_discovery
 
+_BENCHMARK_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "benchmarks"
+
+
+def _fixture_text(name: str) -> str:
+    return (_BENCHMARK_FIXTURES_DIR / name).read_text(encoding="utf-8")
+
+
+def _fixture_json(name: str) -> Any:
+    return json.loads(_fixture_text(name))
+
 
 class _FakeClient:
-    def __init__(self, responses: dict[str, str | bytes | list[dict[str, str]]]) -> None:
+    def __init__(self, responses: dict[str, Any]) -> None:
         self.responses = responses
 
     async def get(self, url: str, params=None):
         request = httpx.Request("GET", url, params=params)
         payload = self.responses[url]
-        if isinstance(payload, list):
+        if isinstance(payload, list | dict):
             return httpx.Response(200, json=payload, request=request)
         if isinstance(payload, bytes):
             return httpx.Response(200, content=payload, request=request)
@@ -116,6 +129,36 @@ class _OpenLlmClientAverageFallback:
             json={"rows": [{"row": {"model": "fallback-model", "Average": 42.5}}]},
             request=request,
         )
+
+
+class _OpenLlmClientAlwaysUnparseable422:
+    async def get(self, url: str, params=None):
+        request = httpx.Request("GET", url, params=params)
+        if url == benchmarks._OPEN_LLM_SIZE_URL:
+            return httpx.Response(
+                200,
+                json={"size": {"dataset": {"num_rows": 5}}},
+                request=request,
+            )
+        if url != benchmarks._OPEN_LLM_ROWS_URL:
+            raise AssertionError(f"unexpected url: {url}")
+        return httpx.Response(
+            422,
+            json={"error": "length too large"},
+            request=request,
+        )
+
+
+class _OpenLlmClientZeroRows:
+    async def get(self, url: str, params=None):
+        request = httpx.Request("GET", url, params=params)
+        if url == benchmarks._OPEN_LLM_SIZE_URL:
+            return httpx.Response(
+                200,
+                json={"size": {"dataset": {"num_rows": 0}}},
+                request=request,
+            )
+        raise AssertionError(f"unexpected url: {url}")
 
 
 @pytest.mark.asyncio
@@ -271,6 +314,29 @@ async def test_fetch_chatbot_arena_scores_prefers_richer_leaderboard_table():
     }
 
 
+def test_parse_chatbot_arena_csv_detects_fallback_arena_score_key():
+    scores = benchmarks._parse_chatbot_arena_csv(
+        _fixture_text("leaderboard_table_arena_key_fallback.csv")
+    )
+
+    assert scores == {
+        "meta llama llama 3 3 70b": 1311.4,
+    }
+
+
+def test_parse_chatbot_arena_snapshot_handles_recursive_mixed_shapes():
+    payload = _fixture_json("snapshot_recursive_mixed_shapes.json")
+    payload["older"]["bucket"][0]["mistralai/mixtral-8x7b-instruct"][1] = "ignored"
+
+    scores = benchmarks._parse_chatbot_arena_snapshot((payload, {"noise": "ignored"}))
+
+    assert scores == {
+        "meta llama llama 3 3 70b": 1401.2,
+        "qwen qwen2 5 7b": 1277.7,
+        "mistralai mixtral 8x7b": 1300.5,
+    }
+
+
 @pytest.mark.asyncio
 async def test_fetch_chatbot_arena_scores_prefers_elo_snapshot_when_parseable():
     client = _FakeClient(
@@ -346,6 +412,40 @@ async def test_fetch_chatbot_arena_scores_uses_older_parseable_snapshot_when_lat
 
 
 @pytest.mark.asyncio
+async def test_fetch_chatbot_arena_scores_falls_back_to_arena_hard_when_table_has_no_scores():
+    client = _FakeClient(
+        {
+            benchmarks._ARENA_TREE_URL: _fixture_json("arena_tree_source_fallback.json"),
+            benchmarks._ARENA_RAW_URL.format(path="leaderboard_table_20250804.csv"): _fixture_text(
+                "leaderboard_table_no_scores.csv"
+            ),
+            benchmarks._ARENA_RAW_URL.format(
+                path="arena_hard_auto_leaderboard_20250701.csv"
+            ): _fixture_text("arena_hard_auto_scores.csv"),
+        }
+    )
+
+    scores = await benchmarks.fetch_chatbot_arena_scores(client)
+
+    assert scores == {
+        "meta llama llama 3 3 70b": 80.1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fetch_chatbot_arena_scores_returns_empty_for_non_list_tree_payload():
+    client = _FakeClient(
+        {
+            benchmarks._ARENA_TREE_URL: _fixture_json("arena_tree_non_list.json"),
+        }
+    )
+
+    scores = await benchmarks.fetch_chatbot_arena_scores(client)
+
+    assert scores == {}
+
+
+@pytest.mark.asyncio
 async def test_fetch_open_llm_scores_uses_dataset_server_page_limit_fallback():
     client = _OpenLlmClient()
 
@@ -374,6 +474,88 @@ async def test_fetch_open_llm_scores_accepts_average_column_fallback():
     scores = await benchmarks.fetch_open_llm_scores(client, page_size=100)
 
     assert scores == {"fallback model": 42.5}
+
+
+@pytest.mark.asyncio
+async def test_fetch_open_llm_scores_raises_when_422_limit_message_is_unparseable():
+    client = _OpenLlmClientAlwaysUnparseable422()
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await benchmarks.fetch_open_llm_scores(client, page_size=100)
+
+
+@pytest.mark.asyncio
+async def test_fetch_open_llm_scores_skips_malformed_rows_and_stops_on_empty_page(monkeypatch):
+    class _SizeClient:
+        async def get(self, url: str, params=None):
+            request = httpx.Request("GET", url, params=params)
+            if url == benchmarks._OPEN_LLM_SIZE_URL:
+                return httpx.Response(
+                    200,
+                    json={"size": {"dataset": {"num_rows": 6}}},
+                    request=request,
+                )
+            raise AssertionError(f"unexpected url: {url}")
+
+    rows_page = _fixture_json("open_llm_rows_malformed_page.json")
+
+    async def fake_rows_page(client, *, offset: int, length: int):
+        if offset == 0:
+            return list(rows_page)
+        return []
+
+    monkeypatch.setattr(benchmarks, "_fetch_open_llm_rows_page", fake_rows_page)
+
+    scores = await benchmarks.fetch_open_llm_scores(_SizeClient(), page_size=10)
+
+    assert scores == {"model good": 91.1}
+
+
+@pytest.mark.asyncio
+async def test_fetch_open_llm_scores_returns_empty_when_dataset_has_no_rows():
+    client = _OpenLlmClientZeroRows()
+
+    scores = await benchmarks.fetch_open_llm_scores(client, page_size=10)
+
+    assert scores == {}
+
+
+@pytest.mark.asyncio
+async def test_refresh_leaderboard_cache_partial_source_failure_keeps_successful_source(
+    tmp_path, monkeypatch
+):
+    db = Database(str(tmp_path / "benchmarks-partial-failure.db"))
+    db.init()
+    db.writer.start()
+
+    async def fake_chatbot_arena_scores(client):
+        return {benchmarks.normalize_model_name("meta-llama/llama-3.3-70b-instruct"): 1337.0}
+
+    async def fail_open_llm_scores(client, *, page_size=500):
+        raise RuntimeError("simulated open-llm failure")
+
+    monkeypatch.setattr(benchmarks, "fetch_chatbot_arena_scores", fake_chatbot_arena_scores)
+    monkeypatch.setattr(benchmarks, "fetch_open_llm_scores", fail_open_llm_scores)
+
+    outcome = await benchmarks.refresh_leaderboard_cache(db, Settings())
+    db.writer.flush()
+
+    with db.read_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT model_name_normalized, chatbot_arena_elo, open_llm_avg_score
+            FROM leaderboard_cache
+            """
+        ).fetchall()
+
+    db.writer.stop()
+
+    assert outcome == {
+        "chatbot_arena_entries": 1,
+        "open_llm_entries": 0,
+        "cache_updates": 1,
+    }
+    assert [tuple(row) for row in rows] == [("meta llama llama 3 3 70b", 1337.0, None)]
 
 
 @pytest.mark.asyncio

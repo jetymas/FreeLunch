@@ -136,6 +136,193 @@ jobs:
             exit 1
           }
 
+  installer-runtime-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build local image for installer runtime smoke
+        run: docker build -t freelunch:test .
+      - name: Run shell installer with real Docker daemon
+        env:
+          HOME: ${{ runner.temp }}/home-installer
+          FREELUNCH_INSTALL_DIR: ${{ runner.temp }}/home-installer/.freelunch
+          OPENROUTER_API_KEY: ci-dummy-openrouter-key
+          GATEWAY_API_KEY: ci-installer-key
+          FREELUNCH_PORT: "18080"
+          FREELUNCH_IMAGE: freelunch:test
+          FREELUNCH_SKIP_PULL: "true"
+          FREELUNCH_AUTO_CONFIRM: "yes"
+        run: |
+          mkdir -p "$HOME"
+          sh ./install.sh
+      - name: Apply deterministic smoke config and restart compose app
+        env:
+          FREELUNCH_INSTALL_DIR: ${{ runner.temp }}/home-installer/.freelunch
+        run: |
+          cat > "$FREELUNCH_INSTALL_DIR/config.yaml" <<'EOF'
+          app:
+            env: dev
+          providers:
+            openrouter:
+              active_probe_enabled: false
+          discovery:
+            leaderboard:
+              chatbot_arena:
+                enabled: false
+              open_llm:
+                enabled: false
+          health:
+            startup_probe_limit: 0
+          EOF
+          if ! grep -q '^OPENROUTER_DEV_STUB_ENABLED=' "$FREELUNCH_INSTALL_DIR/.env"; then
+            printf '\nOPENROUTER_DEV_STUB_ENABLED=true\n' >> "$FREELUNCH_INSTALL_DIR/.env"
+          else
+            sed -i 's/^OPENROUTER_DEV_STUB_ENABLED=.*/OPENROUTER_DEV_STUB_ENABLED=true/' "$FREELUNCH_INSTALL_DIR/.env"
+          fi
+          docker compose --project-directory "$FREELUNCH_INSTALL_DIR" -f "$FREELUNCH_INSTALL_DIR/docker-compose.yml" up -d
+      - name: Installer runtime smoke test (auth + readiness + models + tiny chat)
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE_URL = "http://127.0.0.1:18080"
+          AUTH_KEY = "ci-installer-key"
+          last_error = None
+
+          def request(path, *, method="GET", token=None, payload=None, timeout=2):
+              headers = {}
+              data = None
+              if token is not None:
+                  headers["Authorization"] = f"Bearer {token}"
+              if payload is not None:
+                  headers["Content-Type"] = "application/json"
+                  data = json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(
+                  f"{BASE_URL}{path}",
+                  method=method,
+                  headers=headers,
+                  data=data,
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      return response.status, response.read().decode("utf-8")
+              except urllib.error.HTTPError as exc:
+                  return exc.code, exc.read().decode("utf-8", errors="replace")
+
+          def wait_for(path, *, expected_status, expected_fragment, attempts=45):
+              global last_error
+              for _ in range(attempts):
+                  try:
+                      status, body = request(path)
+                      compact = body.replace(" ", "")
+                      if status == expected_status and expected_fragment in compact:
+                          return
+                      last_error = RuntimeError(
+                          f"unexpected response for {path}: {status} {body}"
+                      )
+                  except Exception as exc:
+                      last_error = exc
+                  time.sleep(1)
+              raise SystemExit(f"installer smoke wait failed for {path}: {last_error}")
+
+          wait_for("/healthz", expected_status=200, expected_fragment='"status":"ok"')
+          wait_for("/readyz", expected_status=200, expected_fragment='"status":"ready"')
+
+          status, body = request("/v1/models")
+          if status != 401 or "missing bearer token" not in body:
+              raise SystemExit(f"missing-token auth check failed: {status} {body}")
+
+          status, body = request("/v1/models", token="wrong-key")
+          if status != 401 or "invalid bearer token" not in body:
+              raise SystemExit(f"invalid-token auth check failed: {status} {body}")
+
+          status, body = request("/v1/models", token=AUTH_KEY)
+          if status != 200:
+              raise SystemExit(f"authorized models check failed: {status} {body}")
+          parsed_models = json.loads(body)
+          models = parsed_models.get("data")
+          if not isinstance(models, list) or not models:
+              raise SystemExit(f"authorized models response missing data: {body}")
+
+          status, body = request(
+              "/v1/chat/completions",
+              method="POST",
+              token=AUTH_KEY,
+              payload={
+                  "model": "auto",
+                  "stream": False,
+                  "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "hi"}],
+              },
+              timeout=5,
+          )
+          if status != 200:
+              raise SystemExit(f"chat smoke failed: {status} {body}")
+          parsed_chat = json.loads(body)
+          if parsed_chat.get("object") != "chat.completion":
+              raise SystemExit(f"chat smoke returned unexpected object: {body}")
+
+          stream_payload = {
+              "model": "auto",
+              "stream": True,
+              "max_tokens": 1,
+              "messages": [{"role": "user", "content": "hi"}],
+          }
+          stream_req = urllib.request.Request(
+              f"{BASE_URL}/v1/chat/completions",
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {AUTH_KEY}",
+                  "Content-Type": "application/json",
+              },
+              data=json.dumps(stream_payload).encode("utf-8"),
+          )
+          saw_stream_chunk = False
+          saw_done = False
+          with urllib.request.urlopen(stream_req, timeout=10) as response:
+              if response.status != 200:
+                  raise SystemExit(
+                      f"streaming chat smoke failed with status {response.status}"
+                  )
+              deadline = time.time() + 10
+              while time.time() < deadline:
+                  raw_line = response.readline()
+                  if not raw_line:
+                      break
+                  line = raw_line.decode("utf-8", errors="replace").strip()
+                  if not line or not line.startswith("data:"):
+                      continue
+                  payload = line[5:].strip()
+                  if payload == "[DONE]":
+                      saw_done = True
+                      break
+                  saw_stream_chunk = True
+          if not saw_stream_chunk or not saw_done:
+              raise SystemExit(
+                  "streaming chat smoke missing data chunk and/or [DONE] terminator"
+              )
+          PY
+      - name: Dump installer smoke container logs on failure
+        if: failure()
+        env:
+          FREELUNCH_INSTALL_DIR: ${{ runner.temp }}/home-installer/.freelunch
+        run: |
+          if [ -f "$FREELUNCH_INSTALL_DIR/docker-compose.yml" ]; then
+            docker compose --project-directory "$FREELUNCH_INSTALL_DIR" -f "$FREELUNCH_INSTALL_DIR/docker-compose.yml" logs --no-color || true
+          fi
+      - name: Run uninstall and verify cleanup
+        if: always()
+        env:
+          HOME: ${{ runner.temp }}/home-installer
+          FREELUNCH_INSTALL_DIR: ${{ runner.temp }}/home-installer/.freelunch
+          FREELUNCH_AUTO_CONFIRM: "yes"
+        run: |
+          sh ./uninstall.sh || true
+          test ! -d "$FREELUNCH_INSTALL_DIR"
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -183,26 +370,142 @@ jobs:
           EOF
       - name: Build image
         run: docker build -t freelunch:test .
-      - name: Run smoke container
-        run: docker run -d --rm --name freelunch-smoke -p 8000:8000 -e APP_ENV=dev -e OPENROUTER_DEV_STUB_ENABLED=true -e STARTUP_PROBE_LIMIT=0 -v "$RUNNER_TEMP/smoke-config.yaml:/app/config.yaml:ro" freelunch:test
-      - name: Smoke test healthz
+      - name: Run smoke container (dev stub + auth)
+        run: docker run -d --rm --name freelunch-smoke -p 8000:8000 -e APP_ENV=dev -e OPENROUTER_DEV_STUB_ENABLED=true -e GATEWAY_API_KEY=ci-smoke-key -e STARTUP_PROBE_LIMIT=0 -v "$RUNNER_TEMP/smoke-config.yaml:/app/config.yaml:ro" freelunch:test
+      - name: Smoke test auth + readiness + models + tiny chat (non-stream + stream)
         run: |
           python - <<'PY'
+          import json
           import time
+          import urllib.error
           import urllib.request
 
+          BASE_URL = "http://127.0.0.1:8000"
+          AUTH_KEY = "ci-smoke-key"
           last_error = None
-          for _ in range(20):
+
+          def request(path, *, method="GET", token=None, payload=None, timeout=2):
+              headers = {}
+              data = None
+              if token is not None:
+                  headers["Authorization"] = f"Bearer {token}"
+              if payload is not None:
+                  headers["Content-Type"] = "application/json"
+                  data = json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(
+                  f"{BASE_URL}{path}",
+                  method=method,
+                  headers=headers,
+                  data=data,
+              )
               try:
-                  with urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=2) as response:
-                      body = response.read().decode("utf-8")
-                  if response.status == 200 and '"status":"ok"' in body.replace(" ", ""):
-                      raise SystemExit(0)
-                  last_error = RuntimeError(f"unexpected response: {response.status} {body}")
-              except Exception as exc:
-                  last_error = exc
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      return response.status, response.read().decode("utf-8")
+              except urllib.error.HTTPError as exc:
+                  return exc.code, exc.read().decode("utf-8", errors="replace")
+
+          def wait_for(path, *, expected_status, expected_fragment, attempts=30):
+              global last_error
+              for _ in range(attempts):
+                  try:
+                      status, body = request(path)
+                      compact = body.replace(" ", "")
+                      if status == expected_status and expected_fragment in compact:
+                          return
+                      last_error = RuntimeError(
+                          f"unexpected response for {path}: {status} {body}"
+                      )
+                  except Exception as exc:
+                      last_error = exc
                   time.sleep(1)
-          raise SystemExit(f"healthz smoke test failed: {last_error}")
+              raise SystemExit(f"smoke wait failed for {path}: {last_error}")
+
+          wait_for("/healthz", expected_status=200, expected_fragment='"status":"ok"')
+          wait_for("/readyz", expected_status=200, expected_fragment='"status":"ready"')
+
+          status, body = request("/v1/models")
+          if status != 401 or "missing bearer token" not in body:
+              raise SystemExit(f"missing-token auth check failed: {status} {body}")
+
+          status, body = request("/v1/models", token="wrong-key")
+          if status != 401 or "invalid bearer token" not in body:
+              raise SystemExit(f"invalid-token auth check failed: {status} {body}")
+
+          status, body = request("/v1/models", token=AUTH_KEY)
+          if status != 200:
+              raise SystemExit(f"authorized models check failed: {status} {body}")
+          parsed_models = json.loads(body)
+          models = parsed_models.get("data")
+          if not isinstance(models, list) or not models:
+              raise SystemExit(f"authorized models response missing data: {body}")
+
+          status, body = request(
+              "/v1/chat/completions",
+              method="POST",
+              token=AUTH_KEY,
+              payload={
+                  "model": "auto",
+                  "stream": False,
+                  "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "hi"}],
+              },
+              timeout=5,
+          )
+          if status != 200:
+              raise SystemExit(f"chat smoke failed: {status} {body}")
+          parsed_chat = json.loads(body)
+          if parsed_chat.get("object") != "chat.completion":
+              raise SystemExit(f"chat smoke returned unexpected object: {body}")
+          choices = parsed_chat.get("choices")
+          if not isinstance(choices, list) or not choices:
+              raise SystemExit(f"chat smoke missing choices: {body}")
+          content = (
+              choices[0].get("message", {}).get("content")
+              if isinstance(choices[0], dict)
+              else None
+          )
+          if not isinstance(content, str) or not content.strip():
+              raise SystemExit(f"chat smoke missing assistant content: {body}")
+
+          stream_payload = {
+              "model": "auto",
+              "stream": True,
+              "max_tokens": 1,
+              "messages": [{"role": "user", "content": "hi"}],
+          }
+          stream_req = urllib.request.Request(
+              f"{BASE_URL}/v1/chat/completions",
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {AUTH_KEY}",
+                  "Content-Type": "application/json",
+              },
+              data=json.dumps(stream_payload).encode("utf-8"),
+          )
+          saw_stream_chunk = False
+          saw_done = False
+          with urllib.request.urlopen(stream_req, timeout=10) as response:
+              if response.status != 200:
+                  raise SystemExit(
+                      f"streaming chat smoke failed with status {response.status}"
+                  )
+              deadline = time.time() + 10
+              while time.time() < deadline:
+                  raw_line = response.readline()
+                  if not raw_line:
+                      break
+                  line = raw_line.decode("utf-8", errors="replace").strip()
+                  if not line or not line.startswith("data:"):
+                      continue
+                  payload = line[5:].strip()
+                  if payload == "[DONE]":
+                      saw_done = True
+                      break
+                  saw_stream_chunk = True
+          if not saw_stream_chunk or not saw_done:
+              raise SystemExit(
+                  "streaming chat smoke missing data chunk and/or [DONE] terminator"
+              )
           PY
       - name: Dump container logs on failure
         if: failure()

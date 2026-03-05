@@ -107,7 +107,9 @@ async def lifespan(app: FastAPI):
         }
         provider_ids = set(runtime_enabled_by_provider.keys())
         provider_ids.update(
-            str(row[0]) for row in active_provider_rows if row[0] is not None and str(row[0]).strip()
+            str(row[0])
+            for row in active_provider_rows
+            if row[0] is not None and str(row[0]).strip()
         )
         for provider_id in current_settings.known_provider_ids:
             if current_settings.is_provider_inference_enabled(provider_id):
@@ -127,11 +129,7 @@ async def lifespan(app: FastAPI):
             db.writer.flush()
             for provider_id in disabled_provider_ids:
                 registered = next(
-                    (
-                        item
-                        for item in registry.all_registered()
-                        if item.name == provider_id
-                    ),
+                    (item for item in registry.all_registered() if item.name == provider_id),
                     None,
                 )
                 runtime_state = registered.adapter.runtime_state() if registered else None
@@ -213,12 +211,30 @@ async def lifespan(app: FastAPI):
     app.state.reload_settings = reload_settings
     apply_provider_runtime_state(settings)
 
-    startup_outcome = await run_discovery_pipeline(
-        db,
-        registry,
-        settings=settings,
-        recompute_readiness=recompute_readiness,
-    )
+    try:
+        startup_outcome = await run_discovery_pipeline(
+            db,
+            registry,
+            settings=settings,
+            recompute_readiness=recompute_readiness,
+        )
+    except Exception:
+        recompute_readiness()
+        startup_outcome = {
+            "discovered": 0,
+            "ranking_updates": 0,
+            "probed_models": 0,
+            "ready": bool(app.state.ready),
+        }
+        runtime_log(
+            logger,
+            "app.startup_pipeline_failed",
+            verbosity="concise",
+            level=40,
+            message="Startup discovery pipeline failed; continuing in degraded mode",
+            ready=bool(app.state.ready),
+            exc_info=True,
+        )
     recompute_readiness()
     runtime_log(
         logger,

@@ -7,6 +7,10 @@ $Repo = $Repo.ToLowerInvariant()
 $Image = if ($env:FREELUNCH_IMAGE) { $env:FREELUNCH_IMAGE } else { "ghcr.io/$Repo`:latest" }
 $InstallDir = if ($env:FREELUNCH_INSTALL_DIR) { $env:FREELUNCH_INSTALL_DIR } else { Join-Path $env:USERPROFILE ".freelunch" }
 $DefaultPort = if ($env:FREELUNCH_PORT) { $env:FREELUNCH_PORT } else { "8000" }
+$SkipPull = $false
+if ($env:FREELUNCH_SKIP_PULL) {
+    $SkipPull = @("1", "true", "yes") -contains $env:FREELUNCH_SKIP_PULL.ToLowerInvariant()
+}
 $script:Upgrading = $false
 
 function Write-Info { param([string]$Message) Write-Host "[INFO] $Message" -ForegroundColor Cyan }
@@ -165,10 +169,14 @@ services:
 }
 
 function Start-FreeLunch {
-    Write-Info "Pulling $Image"
-    docker pull $Image
-    if ($LASTEXITCODE -ne 0) {
-        Fail "Failed to pull image: $Image"
+    if (-not $SkipPull) {
+        Write-Info "Pulling $Image"
+        docker pull $Image
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Failed to pull image: $Image"
+        }
+    } else {
+        Write-Info "Skipping image pull for $Image (FREELUNCH_SKIP_PULL=$env:FREELUNCH_SKIP_PULL)"
     }
     Write-Info "Starting FreeLunch"
     docker compose --project-directory $InstallDir -f (Join-Path $InstallDir "docker-compose.yml") up -d

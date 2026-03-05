@@ -6,7 +6,7 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ### Added
 
-- Queue-backed JSON runtime logging on a separate listener thread, with `concise`, `verbose`, and `debug` verbosity modes plus `/admin/health.runtime_logging` status reporting.
+- Queue-backed JSON runtime logging on a separate listener thread, with `concise`, `verbose`, and `debug` verbosity modes plus `GET /admin/health -> runtime_logging` status reporting.
 - Probe-budget usage, probe runtime summaries, recent probe/bootstrap activity, and token-estimation review summaries in `/admin/health`.
 - Periodic config override refresh via a scheduled `config_refresh` job.
 - Configurable request-log retention with daily pruning maintenance.
@@ -27,6 +27,11 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 - Direct provider-contract tests for OpenAI-compatible discovery/chat/stream/probe/error-normalization invariants.
 - Multi-provider startup/runtime-gating regressions across first-wave provider modules, including no-key disablement and provider-agnostic stream error categorization checks.
 - Optional manual live-provider smoke harness (`scripts/provider_smoke.py`) with pass/fail/skip reporting and JSON output, plus focused smoke-harness tests.
+- `TESTING.md` as a canonical testing strategy/roadmap document, including the 97% coverage target and hard-test-mode plan.
+- `RELEASE_VALIDATION_MATRIX.md` as a manual cross-platform release sign-off checklist and evidence template.
+- `RELEASE_VALIDATION_EVIDENCE.md` as the execution ledger for matrix runs and unresolved host blockers.
+- Property-style invariant suites for routing and token estimation, plus deterministic stress/concurrency tests for probe budgeting and tokenizer-preload scheduling.
+- CI real-daemon Linux installer runtime smoke (`install.sh` + compose runtime + authenticated API checks + uninstall cleanup) using a local image and budget-zero dev-stub settings.
 
 ### Changed
 
@@ -51,6 +56,10 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 - Proxy stream error parsing now routes through provider-agnostic categorization callbacks instead of directly importing OpenRouter categorization logic.
 - Runtime provider gating and probe controls are now represented with provider-agnostic maps while retaining OpenRouter compatibility behavior.
 - Provider onboarding is now module-plus-config driven via `src.providers.<provider_id>` descriptors/factories instead of provider-specific bootstrap wiring in `src/main.py`.
+- Docker smoke checks now validate auth behavior, `/readyz`, `/v1/models`, and tiny authenticated non-stream + stream chat paths instead of only liveness.
+- Installer scripts now support `FREELUNCH_SKIP_PULL=true` for local-image runtime smoke and air-gapped style validation paths.
+- Startup now degrades gracefully when the initial discovery pipeline fails, instead of exiting the process.
+- OpenRouter discovery now treats streaming as supported by default to avoid false-negative stream capability filtering.
 
 ### Fixed
 
@@ -69,6 +78,8 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 - The proxy now handles exhausted `CONTEXT_EXCEEDED` failures more cleanly.
 - Cancelled background Hugging Face tokenizer preloads during shutdown no longer emit misleading warning-level failure logs with empty error text.
 - Python 3.14 test output now suppresses known upstream-only asyncio deprecation warnings using narrowly scoped pytest filters for `fastapi.routing` and `pytest_asyncio.plugin`.
+- Probe-budget consumption under concurrent probe execution is now lock-reserved so per-provider daily budgets are not overshot.
+- Tokenizer preload scheduling now uses an atomic check+submit section to prevent duplicate preload submissions under concurrent calls.
 
 ### Infrastructure
 

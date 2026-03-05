@@ -6,6 +6,7 @@ REPO_LOWER="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
 IMAGE="${FREELUNCH_IMAGE:-ghcr.io/${REPO_LOWER}:latest}"
 INSTALL_DIR="${FREELUNCH_INSTALL_DIR:-${HOME}/.freelunch}"
 DEFAULT_PORT="${FREELUNCH_PORT:-8000}"
+SKIP_PULL="${FREELUNCH_SKIP_PULL:-}"
 
 info() {
     printf '[INFO] %s\n' "$1"
@@ -173,8 +174,15 @@ EOF
 }
 
 run_install() {
-    info "Pulling ${IMAGE}"
-    docker pull "${IMAGE}"
+    case "${SKIP_PULL}" in
+        1|true|TRUE|yes|YES)
+            info "Skipping image pull for ${IMAGE} (FREELUNCH_SKIP_PULL=${SKIP_PULL})"
+            ;;
+        *)
+            info "Pulling ${IMAGE}"
+            docker pull "${IMAGE}"
+            ;;
+    esac
     info "Starting FreeLunch"
     docker compose --project-directory "${INSTALL_DIR}" -f "${INSTALL_DIR}/docker-compose.yml" up -d
 }

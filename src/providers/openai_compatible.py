@@ -106,8 +106,7 @@ def resolve_openai_compatible_credentials(
 ) -> tuple[str, str, str]:
     api_base = str(provider_config.get("api_base", default_api_base)).strip() or default_api_base
     api_key_env = (
-        str(provider_config.get("api_key_env", default_api_key_env)).strip()
-        or default_api_key_env
+        str(provider_config.get("api_key_env", default_api_key_env)).strip() or default_api_key_env
     )
     api_key = os.getenv(api_key_env, "")
     if not api_key:

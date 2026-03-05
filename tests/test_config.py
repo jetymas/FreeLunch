@@ -104,3 +104,124 @@ def test_settings_accepts_provider_agnostic_probe_override_keys():
     assert Settings.is_overridable("providers.openrouter.active_probe_enabled") is True
     assert Settings.is_overridable("providers.dummy.active_probe_enabled") is True
     assert Settings.is_overridable("health.daily_request_budget_by_provider.dummy") is True
+
+
+def test_settings_post_init_fills_openrouter_defaults_and_empty_provider_guards():
+    settings = Settings(
+        providers_enabled=("dummy",),
+        provider_enabled={"dummy": True},
+        provider_discovery_enabled={"dummy": False},
+        provider_inference_enabled={"dummy": True},
+        provider_active_probe_enabled={"dummy": False},
+        provider_bootstrap_config={"dummy": {"api_key_env": "DUMMY_API_KEY"}},
+        health_daily_request_budget_by_provider={"dummy": 3},
+        openrouter_enabled=False,
+        openrouter_discovery_enabled=False,
+        openrouter_inference_enabled=False,
+        openrouter_active_probe_enabled=False,
+    )
+
+    assert settings.provider_enabled["openrouter"] is False
+    assert settings.provider_discovery_enabled["openrouter"] is False
+    assert settings.provider_inference_enabled["openrouter"] is False
+    assert settings.provider_active_probe_enabled["openrouter"] is False
+    assert settings.provider_bootstrap_config["openrouter"] == {}
+    assert settings.startup_probe_limit == settings.health_startup_probe_limit
+    assert settings.known_provider_ids == ("dummy", "openrouter")
+    assert settings.is_provider_enabled("   ") is False
+    assert settings.is_provider_discovery_enabled("   ") is False
+    assert settings.is_provider_inference_enabled("   ") is False
+    assert settings.is_provider_active_probe_enabled("   ") is False
+    assert settings.get_provider_bootstrap_config("   ") == {}
+    assert settings.get_provider_bootstrap_config("dummy") == {"api_key_env": "DUMMY_API_KEY"}
+
+
+def test_apply_overrides_updates_runtime_policy_fields_and_provider_maps():
+    settings = Settings(
+        providers_enabled=("openrouter", "dummy"),
+        provider_enabled={"openrouter": True, "dummy": True},
+        provider_discovery_enabled={"openrouter": True, "dummy": True},
+        provider_inference_enabled={"openrouter": True, "dummy": True},
+        provider_active_probe_enabled={"openrouter": True, "dummy": False},
+        health_daily_request_budget_by_provider={"openrouter": 5, "dummy": 1},
+    )
+
+    settings.apply_overrides(
+        {
+            "discovery.interval_minutes": 0,
+            "ranking.interval_minutes": 0,
+            "routing.max_attempts": "4",
+            "routing.enable_request_preference_headers": 0,
+            "health.probe_interval_minutes": 0,
+            "health.probe_timeout_seconds": 0,
+            "health.probe_concurrency": 0,
+            "health.startup_probe_limit": -2,
+            "health.max_probes_per_run": -1,
+            "health.stale_after_minutes": 0,
+            "health.top_n_stale_probe": -1,
+            "health.consecutive_failures_threshold": 0,
+            "health.cooldown_minutes": 0,
+            "health.max_backoff_exponent": -5,
+            "health.probe_max_tokens": 0,
+            "ranking.fallback_model": "dummy/fallback",
+            "logging.request_log_retention_days": 0,
+            "logging.runtime_enabled": 0,
+            "logging.runtime_verbosity": "debug",
+            "providers.openrouter.active_probe_enabled": False,
+            "providers.dummy.active_probe_enabled": True,
+            "health.daily_request_budget_by_provider.openrouter": -3,
+            "health.daily_request_budget_by_provider.dummy": 8,
+            "ranking.weights.latency": "0.77",
+        }
+    )
+
+    assert settings.discovery_interval_minutes == 1
+    assert settings.ranking_interval_minutes == 1
+    assert settings.routing_max_attempts == 4
+    assert settings.routing_enable_request_preference_headers is False
+    assert settings.health_probe_interval_minutes == 1
+    assert settings.health_probe_timeout_seconds == 1
+    assert settings.health_probe_concurrency == 1
+    assert settings.health_startup_probe_limit == -2
+    assert settings.health_max_probes_per_run == 0
+    assert settings.health_stale_after_minutes == 1
+    assert settings.health_top_n_stale_probe == 0
+    assert settings.health_consecutive_failures_threshold == 1
+    assert settings.health_cooldown_minutes == 1
+    assert settings.health_max_backoff_exponent == 0
+    assert settings.health_probe_max_tokens == 1
+    assert settings.ranking_fallback_model == "dummy/fallback"
+    assert settings.logging_request_log_retention_days == 1
+    assert settings.logging_runtime_enabled is False
+    assert settings.logging_runtime_verbosity == "debug"
+    assert settings.provider_active_probe_enabled["openrouter"] is False
+    assert settings.provider_active_probe_enabled["dummy"] is True
+    assert settings.openrouter_active_probe_enabled is False
+    assert settings.health_daily_request_budget_by_provider["openrouter"] == 0
+    assert settings.health_daily_request_budget_by_provider["dummy"] == 8
+    assert settings.ranking_weights["latency"] == 0.77
+
+
+def test_settings_coercion_helpers_and_env_bool(monkeypatch):
+    assert Settings._coerce_float_mapping(None) == {}
+    assert Settings._coerce_int_mapping("not-a-mapping") == {}
+    assert Settings._coerce_bool_mapping(123) == {}
+    assert Settings._coerce_provider_bootstrap_config(None) == {}
+    assert Settings._coerce_provider_bootstrap_config(
+        {"valid": {"x": 1}, "invalid": "nope", "": {"ignored": True}}
+    ) == {"valid": {"x": 1}}
+    assert Settings._coerce_string_list("not-a-list") == []
+    assert Settings._coerce_provider_sections("not-a-mapping") == {}
+    assert Settings._coerce_provider_sections({"enabled": ["dummy"], "dummy": {"x": 1}, "nope": 1}) == {
+        "dummy": {"x": 1}
+    }
+    assert Settings._provider_from_probe_budget_key("health.daily_request_budget_by_provider.dummy") == "dummy"
+    assert Settings._provider_from_probe_budget_key("health.daily_request_budget_by_provider.") is None
+    assert Settings._provider_from_probe_budget_key("health.daily_request_budget_by_providerx.dummy") is None
+
+    monkeypatch.delenv("TEST_SETTINGS_BOOL", raising=False)
+    assert Settings._env_bool("TEST_SETTINGS_BOOL", 0) is False
+    monkeypatch.setenv("TEST_SETTINGS_BOOL", " yes ")
+    assert Settings._env_bool("TEST_SETTINGS_BOOL", False) is True
+    monkeypatch.setenv("TEST_SETTINGS_BOOL", "false")
+    assert Settings._env_bool("TEST_SETTINGS_BOOL", True) is False

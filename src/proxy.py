@@ -274,6 +274,11 @@ async def _relay_stream(
             yield raw_event
     except ProviderError as exc:
         stream_error = exc
+    except Exception as exc:
+        stream_error = ProviderRetryableError(
+            str(exc)[:500],
+            category="PROVIDER_UNAVAILABLE",
+        )
     finally:
         latency_ms = int((time.monotonic() - start) * 1000)
         if stream_error is None and not await request.is_disconnected():
@@ -748,6 +753,7 @@ def build_router() -> APIRouter:
             )
             try:
                 if req.requires_streaming:
+
                     def categorize_stream_error(
                         status_code: int | None,
                         error_code: str | None,
@@ -842,6 +848,21 @@ def build_router() -> APIRouter:
                     category="PROVIDER_UNAVAILABLE",
                 )
                 all_failures_context_exceeded = False
+                mark_failure(db, model_id, str(last_provider_error), settings=settings)
+                _log_failure(
+                    db,
+                    request_id=request_id,
+                    model_id=model_id,
+                    provider_name=provider_name,
+                    requested_model=req.requested_model,
+                    attempt_index=idx,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    provider_error=last_provider_error,
+                    requires_streaming=req.requires_streaming,
+                    requires_tools=req.requires_tools,
+                    requires_vision=req.requires_vision,
+                    token_observation=token_observation,
+                )
                 runtime_log(
                     logger,
                     "request.attempt.failed",

@@ -16,3 +16,9 @@ bench_pytest_output.txt
 tmp*.db
 .testkey
 .github_logs
+
+# Local secret material
+.env
+.env.*
+!.env.example
+.envrc

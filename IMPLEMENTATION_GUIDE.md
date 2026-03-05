@@ -130,7 +130,7 @@ Additional coverage:
 Observability:
 
 - `request_log` stores sizing evidence fields
-- `/admin/health.token_estimation_review` exposes threshold-based manual review flags
+- `GET /admin/health` exposes a `token_estimation_review` object with threshold-based manual review flags
 
 ## 7. Discovery, Ranking, And Health Jobs
 

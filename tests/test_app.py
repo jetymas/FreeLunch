@@ -4,14 +4,17 @@ import importlib
 import sys
 import types
 from datetime import datetime, timezone
+from typing import cast
 
 import pytest
 import yaml
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.db import Database, utc_now_iso
 from src.providers.base import (
     ChatResult,
+    ProviderFatalError,
     ProviderRetryableError,
     ProviderRuntimeState,
     StreamResult,
@@ -352,6 +355,20 @@ def test_admin_enable_disable_model_impacts_readiness(client):
     assert ready_after_enable.status_code == 200
 
 
+def test_admin_model_endpoints_return_404_for_unknown_model(client):
+    detail_response = client.get("/admin/models/openrouter/does-not-exist")
+    assert detail_response.status_code == 404
+    assert detail_response.json()["detail"] == "model not found"
+
+    disable_response = client.post("/admin/models/openrouter/does-not-exist/disable")
+    assert disable_response.status_code == 404
+    assert disable_response.json()["detail"] == "model not found"
+
+    enable_response = client.post("/admin/models/openrouter/does-not-exist/enable")
+    assert enable_response.status_code == 404
+    assert enable_response.json()["detail"] == "model not found"
+
+
 def test_admin_refresh_triggers_discovery_immediately(client):
     before = client.get("/admin/health")
     assert before.status_code == 200
@@ -372,6 +389,13 @@ def test_admin_refresh_triggers_discovery_immediately(client):
     assert discovery_job["last_success_at"]
 
 
+def test_admin_refresh_returns_503_when_discovery_runner_is_unavailable(client):
+    client.app.state.discovery_runner = None
+    response = client.post("/admin/refresh")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "discovery runner unavailable"
+
+
 def test_admin_logs_returns_recent_entries(client):
     response = client.post(
         "/v1/chat/completions",
@@ -385,6 +409,33 @@ def test_admin_logs_returns_recent_entries(client):
     assert payload["count"] >= 1
     assert payload["limit"] == 5
     assert payload["logs"][0]["request_id"]
+
+
+def test_admin_logs_success_only_filter_returns_expected_rows(client, monkeypatch):
+    ok_response = client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "successful request"}]},
+    )
+    assert ok_response.status_code == 200
+
+    async def fatal_chat(self, request_body, model):
+        raise ProviderFatalError("invalid payload", category="INVALID_REQUEST")
+
+    monkeypatch.setattr(OpenRouterAdapter, "chat_completions", fatal_chat)
+    fail_response = client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "failing request"}]},
+    )
+    assert fail_response.status_code == 400
+
+    success_logs = client.get("/admin/logs?limit=20&success_only=true").json()["logs"]
+    assert success_logs
+    assert all(entry["success"] is True for entry in success_logs)
+
+    failure_logs = client.get("/admin/logs?limit=20&success_only=false").json()["logs"]
+    assert failure_logs
+    assert all(entry["success"] is False for entry in failure_logs)
+    assert any(entry["gateway_error_category"] == "INVALID_REQUEST" for entry in failure_logs)
 
 
 def test_admin_config_override_updates_runtime_settings(client):
@@ -407,6 +458,12 @@ def test_admin_config_override_updates_runtime_settings(client):
     after_delete = client.get("/admin/config").json()
     assert not any(item["key"] == "routing.max_attempts" for item in after_delete["overrides"])
     assert after_delete["effective"]["routing.max_attempts"] == 3
+
+
+def test_admin_config_override_requires_value_field(client):
+    response = client.put("/admin/config/routing.max_attempts", json={})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "missing value"
 
 
 def test_periodic_config_refresh_picks_up_db_overrides(client):
@@ -612,6 +669,201 @@ providers:
         assert any(item["id"] == "dummyfactory/free" for item in models)
 
 
+def test_provider_module_transitive_import_error_is_not_suppressed(tmp_path, monkeypatch):
+    from src.providers import registry as registry_module
+
+    original_import_module = registry_module.importlib.import_module
+
+    def fake_import_module(module_name: str, package: str | None = None):
+        if module_name == "src.providers.transitivebroken":
+            raise ModuleNotFoundError(
+                "No module named 'missing_transitive_dependency'",
+                name="missing_transitive_dependency",
+            )
+        return original_import_module(module_name, package)
+
+    monkeypatch.setattr(registry_module.importlib, "import_module", fake_import_module)
+
+    with (
+        pytest.raises(ModuleNotFoundError) as exc_info,
+        _build_client_with_config(
+            tmp_path,
+            monkeypatch,
+            """
+providers:
+  enabled:
+    - transitivebroken
+  openrouter:
+    enabled: false
+  transitivebroken:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+""",
+        ),
+    ):
+        pass
+
+    assert exc_info.value.name == "missing_transitive_dependency"
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "module_attrs"),
+    [
+        ("nobootstrap", {}),
+        (
+            "invalidbootstrap",
+            {
+                "PROVIDER_BOOTSTRAP_DESCRIPTOR": object(),
+                "build_provider_adapter": "not-callable",
+            },
+        ),
+    ],
+)
+def test_provider_module_without_valid_bootstrap_is_skipped_and_startup_not_ready(
+    tmp_path,
+    monkeypatch,
+    provider_id: str,
+    module_attrs: dict[str, object],
+):
+    module_name = f"src.providers.{provider_id}"
+    dummy_module = types.ModuleType(module_name)
+    for attr_name, attr_value in module_attrs.items():
+        setattr(dummy_module, attr_name, attr_value)
+    monkeypatch.setitem(sys.modules, module_name, dummy_module)
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        f"""
+providers:
+  enabled:
+    - {provider_id}
+  openrouter:
+    enabled: false
+  {provider_id}:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+""",
+    ) as client:
+        assert client.app.state.settings.is_provider_enabled(provider_id) is True
+        assert client.app.state.settings.is_provider_discovery_enabled(provider_id) is True
+        assert client.app.state.settings.is_provider_inference_enabled(provider_id) is True
+        with pytest.raises(KeyError):
+            client.app.state.registry.get_registered(provider_id)
+        assert client.app.state.registry.all() == []
+
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+
+
+def test_startup_discovery_failure_degrades_but_keeps_gateway_alive(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "discovery": {
+                    "leaderboard": {
+                        "chatbot_arena": {"enabled": False},
+                        "open_llm": {"enabled": False},
+                    }
+                },
+                "health": {"startup_probe_limit": 0},
+                "providers": {
+                    "openrouter": {
+                        "enabled": False,
+                        "active_probe_enabled": False,
+                    }
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("GATEWAY_API_KEY", raising=False)
+
+    import src.main as main_module
+
+    main_module = importlib.reload(main_module)
+
+    async def _fail_pipeline(*args, **kwargs):
+        raise ProviderRetryableError("forced startup failure", category="PROVIDER_UNAVAILABLE")
+
+    monkeypatch.setattr(main_module, "run_discovery_pipeline", _fail_pipeline)
+
+    with TestClient(main_module.app) as client:
+        health = client.get("/healthz")
+        assert health.status_code == 200
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+
+
+def test_provider_module_bootstrap_sanitizes_whitespace_provider_id(tmp_path, monkeypatch):
+    from src.providers.registry import ProviderBootstrapContext
+
+    class WhitespaceFactoryAdapter:
+        name = "dummywhitespace"
+
+        def runtime_state(self) -> ProviderRuntimeState:
+            return ProviderRuntimeState(discovery_available=True, inference_available=True)
+
+        def categorize_error(self, status_code, error_code, message):
+            return "PROVIDER_UNAVAILABLE", True
+
+        async def discover_models(self):
+            return []
+
+        async def chat_completions(self, request_body, model):
+            return ChatResult(payload={"id": "unused", "choices": []})
+
+        async def stream_chat_completions(self, request_body, model):
+            async def gen():
+                yield b"data: [DONE]\n\n"
+
+            return StreamResult(events=gen())
+
+        async def probe(self, model, *, max_tokens=1, timeout_seconds=15):
+            return await self.chat_completions({"messages": []}, model)
+
+    def _build_whitespace_adapter(context: ProviderBootstrapContext):
+        assert context.provider_id == "dummywhitespace"
+        return WhitespaceFactoryAdapter()
+
+    module_name = "src.providers.dummywhitespace"
+    dummy_module = types.ModuleType(module_name)
+    dummy_module.build_provider_adapter = _build_whitespace_adapter
+    monkeypatch.setitem(sys.modules, module_name, dummy_module)
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - "  dummywhitespace  "
+  openrouter:
+    enabled: false
+  "  dummywhitespace  ":
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+""",
+    ) as client:
+        registered = client.app.state.registry.get_registered("dummywhitespace")
+        assert registered.name == "dummywhitespace"
+        assert registered.discovery_enabled is False
+        assert registered.inference_enabled is False
+        with pytest.raises(KeyError):
+            client.app.state.registry.get("dummywhitespace")
+
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+
+
 def test_openai_module_bootstrap_uses_provider_section_api_env_and_base(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_CUSTOM_KEY", "openai-test-key")
 
@@ -735,13 +987,14 @@ providers:
     inference_enabled: true
 """,
     ) as client:
-        registered = client.app.state.registry.get_registered(provider_id)
+        app = cast(FastAPI, client.app)
+        registered = app.state.registry.get_registered(provider_id)
         assert registered.adapter.name == provider_id
         assert registered.discovery_enabled is False
         assert registered.inference_enabled is False
-        assert client.app.state.registry.all() == []
+        assert app.state.registry.all() == []
         with pytest.raises(KeyError):
-            client.app.state.registry.get(provider_id)
+            app.state.registry.get(provider_id)
 
         ready = client.get("/readyz")
         assert ready.status_code == 503

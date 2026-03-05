@@ -24,6 +24,7 @@ ignore = ["E501", "UP017"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [".pytest_tmp*", "pytest_tmp*", "pytest-cache-files-*", "tests/tmp_*"]
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     "ignore:'asyncio.iscoroutinefunction' is deprecated.*:DeprecationWarning:fastapi\\.routing",

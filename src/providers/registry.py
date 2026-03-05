@@ -64,8 +64,15 @@ _BUILTIN_BOOTSTRAP_DESCRIPTORS: dict[str, ProviderBootstrapDescriptor] = {
 }
 
 
+def _normalize_provider_id(provider_id: str) -> str:
+    return provider_id.strip()
+
+
 def _load_module_bootstrap_descriptor(provider_id: str) -> ProviderBootstrapDescriptor | None:
-    module_name = f"src.providers.{provider_id}"
+    normalized_provider_id = _normalize_provider_id(provider_id)
+    if not normalized_provider_id:
+        return None
+    module_name = f"src.providers.{normalized_provider_id}"
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
@@ -76,14 +83,14 @@ def _load_module_bootstrap_descriptor(provider_id: str) -> ProviderBootstrapDesc
     descriptor = getattr(module, "PROVIDER_BOOTSTRAP_DESCRIPTOR", None)
     if isinstance(descriptor, ProviderBootstrapDescriptor):
         return ProviderBootstrapDescriptor(
-            provider_id=provider_id,
+            provider_id=normalized_provider_id,
             factory=descriptor.factory,
         )
 
     factory = getattr(module, "build_provider_adapter", None)
     if callable(factory):
         return ProviderBootstrapDescriptor(
-            provider_id=provider_id,
+            provider_id=normalized_provider_id,
             factory=cast(ProviderAdapterFactory, factory),
         )
     return None
@@ -91,10 +98,20 @@ def _load_module_bootstrap_descriptor(provider_id: str) -> ProviderBootstrapDesc
 
 def iter_provider_bootstrap_descriptors(settings: Settings) -> list[ProviderBootstrapDescriptor]:
     descriptors: list[ProviderBootstrapDescriptor] = []
+    seen_provider_ids: set[str] = set()
     for provider_id in settings.known_provider_ids:
-        descriptor = _BUILTIN_BOOTSTRAP_DESCRIPTORS.get(provider_id)
+        normalized_provider_id = _normalize_provider_id(provider_id)
+        if not normalized_provider_id or normalized_provider_id in seen_provider_ids:
+            continue
+        seen_provider_ids.add(normalized_provider_id)
+        descriptor = _BUILTIN_BOOTSTRAP_DESCRIPTORS.get(normalized_provider_id)
         if descriptor is None:
-            descriptor = _load_module_bootstrap_descriptor(provider_id)
+            descriptor = _load_module_bootstrap_descriptor(normalized_provider_id)
+        elif descriptor.provider_id != normalized_provider_id:
+            descriptor = ProviderBootstrapDescriptor(
+                provider_id=normalized_provider_id,
+                factory=descriptor.factory,
+            )
         if descriptor is not None:
             descriptors.append(descriptor)
     return descriptors
@@ -297,7 +314,10 @@ class ProviderRegistry:
         )
 
     def get_registered(self, name: str) -> RegisteredProvider:
-        return self._providers[name]
+        provider_name = name.strip()
+        if not provider_name:
+            raise KeyError(name)
+        return self._providers[provider_name]
 
     def get(self, name: str) -> ProviderAdapter:
         provider = self.get_registered(name)
@@ -307,9 +327,7 @@ class ProviderRegistry:
 
     def all(self) -> list[ProviderAdapter]:
         return [
-            provider.adapter
-            for provider in self._providers.values()
-            if provider.discovery_enabled
+            provider.adapter for provider in self._providers.values() if provider.discovery_enabled
         ]
 
     def all_registered(self) -> list[RegisteredProvider]:

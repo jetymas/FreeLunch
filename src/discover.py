@@ -13,6 +13,8 @@ logger = get_logger(__name__)
 def _coerce_rank(value: object) -> int | None:
     if value is None:
         return None
+    if isinstance(value, bool):
+        return None
     if not isinstance(value, int | float | str):
         return None
     try:
@@ -59,7 +61,7 @@ def _benchmark_lookup_keys(model: dict) -> list[str]:
 
 def _apply_cached_benchmarks(db: Database, model: dict) -> dict:
     enriched = dict(model)
-    if enriched.get("chatbot_arena_elo") is not None or enriched.get("open_llm_score") is not None:
+    if enriched.get("chatbot_arena_elo") is not None and enriched.get("open_llm_score") is not None:
         return enriched
 
     for key in _benchmark_lookup_keys(enriched):
@@ -70,7 +72,11 @@ def _apply_cached_benchmarks(db: Database, model: dict) -> dict:
             enriched["chatbot_arena_elo"] = cached["chatbot_arena_elo"]
         if enriched.get("open_llm_score") is None:
             enriched["open_llm_score"] = cached["open_llm_avg_score"]
-        break
+        if (
+            enriched.get("chatbot_arena_elo") is not None
+            and enriched.get("open_llm_score") is not None
+        ):
+            break
     return enriched
 
 

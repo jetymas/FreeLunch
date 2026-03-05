@@ -208,11 +208,7 @@ def _parse_rows_length_limit(exc: httpx.HTTPStatusError) -> int | None:
 
 def _open_llm_model_name(row: dict[str, Any]) -> str:
     return str(
-        row.get("fullname")
-        or row.get("eval_name")
-        or row.get("model")
-        or row.get("Model")
-        or ""
+        row.get("fullname") or row.get("eval_name") or row.get("model") or row.get("Model") or ""
     )
 
 

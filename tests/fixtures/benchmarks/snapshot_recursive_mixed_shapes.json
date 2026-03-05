@@ -1,0 +1,26 @@
+{
+  "latest": [
+    {
+      "meta-llama/llama-3.3-70b-instruct": {
+        "Arena Elo": "1401.2"
+      }
+    },
+    {
+      "qwen/qwen2.5-7b-instruct": 1277.7
+    },
+    {
+      "invalid-entry": {
+        "rating": "not-a-number"
+      }
+    }
+  ],
+  "older": {
+    "bucket": [
+      {
+        "mistralai/mixtral-8x7b-instruct": {
+          " ARENA RATING ": "1300.5"
+        }
+      }
+    ]
+  }
+}

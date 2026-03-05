@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import time
 
 import tiktoken
 
 import src.tokens as tokens_module
 from src.tokens import (
+    IMAGE_TOKEN_COST,
+    MESSAGE_METADATA_OVERHEAD_TOKENS,
     MESSAGE_OVERHEAD_TOKENS,
     REQUEST_OVERHEAD_TOKENS,
+    STRUCTURED_OUTPUT_OVERHEAD_TOKENS,
+    TOOLS_OVERHEAD_TOKENS,
     _candidate_hf_repo_ids,
     _detect_text_content_type,
     estimate_required_tokens,
+    request_contains_vision,
     schedule_tokenizer_preload,
 )
 
@@ -521,6 +527,161 @@ def test_estimate_required_tokens_uses_explicit_tiktoken_family_for_json_fields(
     assert actual == expected
 
 
+def test_estimate_required_tokens_counts_structured_metadata_fields():
+    message = {
+        "role": "assistant",
+        "content": "",
+        "name": "tool-actor",
+        "tool_call_id": "call_abc123",
+        "refusal": "Cannot comply with that request.",
+        "function_call": {
+            "name": "lookup",
+            "arguments": '{"query":"widgets","limit":3}',
+        },
+        "audio": {"id": "audio_1", "format": "wav"},
+    }
+    encoding = tiktoken.get_encoding("cl100k_base")
+
+    expected = REQUEST_OVERHEAD_TOKENS + MESSAGE_OVERHEAD_TOKENS
+    expected += MESSAGE_METADATA_OVERHEAD_TOKENS + len(
+        encoding.encode(message["name"], disallowed_special=())
+    )
+    expected += MESSAGE_METADATA_OVERHEAD_TOKENS + len(
+        encoding.encode(message["tool_call_id"], disallowed_special=())
+    )
+    expected += MESSAGE_METADATA_OVERHEAD_TOKENS + len(
+        encoding.encode(message["refusal"], disallowed_special=())
+    )
+    expected += MESSAGE_METADATA_OVERHEAD_TOKENS + len(
+        encoding.encode(
+            json.dumps(message["function_call"], ensure_ascii=True, separators=(",", ":")),
+            disallowed_special=(),
+        )
+    )
+    expected += MESSAGE_METADATA_OVERHEAD_TOKENS + len(
+        encoding.encode(
+            json.dumps(message["audio"], ensure_ascii=True, separators=(",", ":")),
+            disallowed_special=(),
+        )
+    )
+
+    actual = estimate_required_tokens(
+        [message],
+        safety_buffer=0.0,
+        tokenizer_family="cl100k_base",
+    )
+
+    assert actual == expected
+
+
+def test_request_contains_vision_and_estimation_support_part_variants():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                {"input_image": {"url": "https://example.com/b.png"}},
+                {"type": "text", "text": "briefly"},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": {"type": "image", "image_url": {"url": "https://example.com/c.png"}},
+        },
+    ]
+    encoding = tiktoken.get_encoding("cl100k_base")
+    expected = REQUEST_OVERHEAD_TOKENS + (2 * MESSAGE_OVERHEAD_TOKENS)
+    expected += len(encoding.encode("Describe", disallowed_special=()))
+    expected += len(encoding.encode("briefly", disallowed_special=()))
+    expected += 3 * IMAGE_TOKEN_COST
+
+    actual = estimate_required_tokens(
+        messages,
+        safety_buffer=0.0,
+        tokenizer_family="cl100k_base",
+    )
+
+    assert request_contains_vision(messages) is True
+    assert (
+        request_contains_vision(
+            [{"role": "user", "content": [{"type": "input_text", "text": "no image"}]}]
+        )
+        is False
+    )
+    assert actual == expected
+
+
+def test_estimate_required_tokens_adds_tools_and_response_format_overheads():
+    messages = [{"role": "user", "content": "hello"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "answer",
+            "schema": {
+                "type": "object",
+                "properties": {"result": {"type": "string"}},
+                "required": ["result"],
+            },
+        },
+    }
+    encoding = tiktoken.get_encoding("cl100k_base")
+    expected = REQUEST_OVERHEAD_TOKENS + MESSAGE_OVERHEAD_TOKENS
+    expected += len(encoding.encode("hello", disallowed_special=()))
+    expected += TOOLS_OVERHEAD_TOKENS + len(
+        encoding.encode(
+            json.dumps(tools, ensure_ascii=True, separators=(",", ":")), disallowed_special=()
+        )
+    )
+    expected += STRUCTURED_OUTPUT_OVERHEAD_TOKENS + len(
+        encoding.encode(
+            json.dumps(response_format, ensure_ascii=True, separators=(",", ":")),
+            disallowed_special=(),
+        )
+    )
+
+    actual = estimate_required_tokens(
+        messages,
+        tools=tools,
+        response_format=response_format,
+        safety_buffer=0.0,
+        tokenizer_family="cl100k_base",
+    )
+
+    assert actual == expected
+
+
+def test_estimate_required_tokens_skips_falsey_tools_and_response_format():
+    messages = [{"role": "user", "content": "hello"}]
+    base = estimate_required_tokens(
+        messages,
+        safety_buffer=0.0,
+        tokenizer_family="cl100k_base",
+    )
+    actual = estimate_required_tokens(
+        messages,
+        tools=[],
+        response_format={},
+        safety_buffer=0.0,
+        tokenizer_family="cl100k_base",
+    )
+
+    assert actual == base
+
+
 def test_estimate_required_tokens_retries_after_transient_hf_tokenizer_failure(monkeypatch):
     class _FakeTokenizer:
         def encode(self, text, add_special_tokens=False):
@@ -665,3 +826,90 @@ def test_tokenizer_future_done_logs_exception_type_when_preload_fails(monkeypatc
             },
         )
     ]
+
+
+def test_schedule_tokenizer_preload_false_return_gates(monkeypatch):
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(repo_id, use_fast=True, trust_remote_code=False):
+            raise AssertionError(f"unexpected tokenizer load for {repo_id}")
+
+    hint = "qwen/qwen2.5-7b-instruct:free"
+    tokens_module._clear_hf_tokenizer_cache()
+    monkeypatch.setattr(tokens_module, "AutoTokenizer", _FakeAutoTokenizer)
+
+    assert schedule_tokenizer_preload(None) is False
+    assert schedule_tokenizer_preload("   ") is False
+
+    monkeypatch.setattr(tokens_module, "AutoTokenizer", None)
+    assert schedule_tokenizer_preload(hint) is False
+
+    monkeypatch.setattr(tokens_module, "AutoTokenizer", _FakeAutoTokenizer)
+    assert schedule_tokenizer_preload("openai/gpt-4o-mini") is False
+    assert schedule_tokenizer_preload("qwen2.5-7b-instruct") is False
+
+    tokens_module._HF_TOKENIZER_CACHE[hint] = object()
+    assert schedule_tokenizer_preload(hint) is False
+
+    tokens_module._clear_hf_tokenizer_cache()
+    monkeypatch.setattr(tokens_module, "AutoTokenizer", _FakeAutoTokenizer)
+    pending: concurrent.futures.Future[object | None] = concurrent.futures.Future()
+    tokens_module._HF_TOKENIZER_FUTURES[hint] = pending
+    assert schedule_tokenizer_preload(hint) is False
+
+    pending.cancel()
+    tokens_module._clear_hf_tokenizer_cache()
+
+
+def test_estimate_required_tokens_falls_back_when_exact_hf_tokenizer_encode_raises(monkeypatch):
+    class _ExplodingHFTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            raise RuntimeError("hf encode failure")
+
+    def fake_resolve_exact_tokenizer(*, tokenizer_family=None, model_hint=None):
+        del tokenizer_family, model_hint
+        return ("hf", _ExplodingHFTokenizer())
+
+    content = "fallback should use heuristic after hf encode failure"
+    expected = (
+        REQUEST_OVERHEAD_TOKENS
+        + MESSAGE_OVERHEAD_TOKENS
+        + tokens_module._heuristic_text_token_count(content, tokenizer_family="qwen2")
+    )
+    monkeypatch.setattr(tokens_module, "_resolve_exact_tokenizer", fake_resolve_exact_tokenizer)
+
+    actual = estimate_required_tokens(
+        [{"role": "user", "content": content}],
+        safety_buffer=0.0,
+        tokenizer_family="qwen2",
+        model_hint="qwen/qwen2.5-7b-instruct:free",
+    )
+
+    assert actual == expected
+
+
+def test_estimate_required_tokens_falls_back_when_exact_tiktoken_encode_raises(monkeypatch):
+    class _ExplodingEncoding:
+        def encode(self, text, disallowed_special=()):
+            raise RuntimeError("tiktoken encode failure")
+
+    def fake_resolve_exact_tokenizer(*, tokenizer_family=None, model_hint=None):
+        del tokenizer_family, model_hint
+        return ("tiktoken", _ExplodingEncoding())
+
+    content = "fallback should use heuristic after tiktoken encode failure"
+    expected = (
+        REQUEST_OVERHEAD_TOKENS
+        + MESSAGE_OVERHEAD_TOKENS
+        + tokens_module._heuristic_text_token_count(content, tokenizer_family="gpt")
+    )
+    monkeypatch.setattr(tokens_module, "_resolve_exact_tokenizer", fake_resolve_exact_tokenizer)
+
+    actual = estimate_required_tokens(
+        [{"role": "user", "content": content}],
+        safety_buffer=0.0,
+        tokenizer_family="gpt",
+        model_hint="openai/gpt-4o-mini",
+    )
+
+    assert actual == expected

@@ -1,6 +1,6 @@
 # Operations Runbook
 
-This document is the operator-focused companion to [FREELUNCH_SPEC_v8.md](C:/Users/19Jes/dev/FreeLunch/FREELUNCH_SPEC_v8.md). It explains how to run, validate, observe, and maintain a FreeLunch deployment using the repository as it exists today.
+This document is the operator-focused companion to [FREELUNCH_SPEC_v8.md](./FREELUNCH_SPEC_v8.md). It explains how to run, validate, observe, and maintain a FreeLunch deployment using the repository as it exists today.
 
 For implementation internals (module behavior, request pipeline, schema details), use `IMPLEMENTATION_GUIDE.md`.
 
@@ -387,7 +387,7 @@ This is intentional.
 
 ### 12.4 Token Review Endpoint
 
-Use `/admin/health.token_estimation_review` to decide whether heuristic drift is becoming operationally significant.
+Use `GET /admin/health`, then inspect `token_estimation_review` to decide whether heuristic drift is becoming operationally significant.
 
 Review signals include:
 
@@ -487,6 +487,50 @@ Pass/skip/fail interpretation:
 - fail:
   provider enabled but unregistered, or keyed-enabled provider fails discovery due transport/provider/runtime errors
 
+### 15.2 CI Budget-Zero Container Smoke
+
+Outside-repo CI realism checks run in `.github/workflows/ci.yml` (`docker-build` job) with deterministic, no-spend settings:
+
+- `APP_ENV=dev`
+- `OPENROUTER_DEV_STUB_ENABLED=true`
+- `GATEWAY_API_KEY=ci-smoke-key` (fixed non-secret test value)
+- startup probes disabled and benchmark refresh disabled in mounted smoke config
+
+Current CI smoke assertions:
+
+1. `/healthz` eventually returns `200` with `{"status":"ok"}`.
+2. `/readyz` eventually returns `200` with `{"status":"ready"}`.
+3. `/v1/models` auth behavior is enforced:
+   - no bearer token returns `401` (`missing bearer token`)
+   - wrong bearer token returns `401` (`invalid bearer token`)
+   - correct bearer token returns `200` with at least one model in `data`
+4. one tiny non-stream `/v1/chat/completions` request (`max_tokens=1`) succeeds with bearer auth.
+5. one tiny stream `/v1/chat/completions` request (`max_tokens=1`) yields at least one `data:` chunk plus terminal `[DONE]`.
+
+This path intentionally uses no real provider credentials and should not incur provider billing.
+
+### 15.3 CI Real-Daemon Installer Runtime Smoke (Linux)
+
+CI also runs a real Docker-daemon installer/runtime smoke in `.github/workflows/ci.yml` (`installer-runtime-smoke` job):
+
+1. build local image `freelunch:test`
+2. run `install.sh` non-interactively against real Docker with:
+   - `FREELUNCH_IMAGE=freelunch:test`
+   - `FREELUNCH_SKIP_PULL=true`
+   - fixed test auth key and port
+3. rewrite installed `config.yaml` to disable benchmark refresh and startup probes for deterministic bootstrap
+4. set `OPENROUTER_DEV_STUB_ENABLED=true` in installed `.env`
+5. run compose up, then assert:
+   - `/healthz` returns `200`
+   - `/readyz` returns `200`
+   - `/v1/models` auth checks (`401` missing/wrong token, `200` correct token)
+   - tiny authenticated non-stream and stream chat requests succeed
+6. run `uninstall.sh` and verify install directory cleanup
+
+This path validates outside-repo installer + compose runtime behavior without using real provider credentials or paid API traffic.
+
+Manual cross-platform sign-off is tracked in `RELEASE_VALIDATION_MATRIX.md`; execution evidence is recorded in `RELEASE_VALIDATION_EVIDENCE.md`.
+
 ## 16. Incident Patterns
 
 ### 16.1 `/readyz` returns `503`
@@ -541,6 +585,7 @@ When behavior changes materially, update:
 - `SPEC_GAP_REVIEW.md`
 - `TASKS.md`
 - `AGENTS.md`
+- `TESTING.md`
 - `IMPLEMENTATION_GUIDE.md`
 - any operator-facing docs affected by the change
 

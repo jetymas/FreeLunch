@@ -8,8 +8,11 @@ Read these in order before making larger changes:
 2. `SPEC_GAP_REVIEW.md`
 3. `TASKS.md`
 4. `README.md`
-5. `IMPLEMENTATION_GUIDE.md`
-6. `AGENTS.md`
+5. `TESTING.md`
+6. `RELEASE_VALIDATION_MATRIX.md`
+7. `RELEASE_VALIDATION_EVIDENCE.md`
+8. `IMPLEMENTATION_GUIDE.md`
+9. `AGENTS.md`
 
 Use them together:
 
@@ -17,6 +20,9 @@ Use them together:
 - `SPEC_GAP_REVIEW.md` is the current implementation-vs-spec snapshot
 - `TASKS.md` is the active backlog
 - `README.md` is the user-facing onboarding guide
+- `TESTING.md` is the canonical testing strategy and validation roadmap
+- `RELEASE_VALIDATION_MATRIX.md` is the manual release sign-off checklist/evidence template
+- `RELEASE_VALIDATION_EVIDENCE.md` is the execution ledger for matrix runs and blockers
 - `IMPLEMENTATION_GUIDE.md` is the technical implementation reference
 - `AGENTS.md` is the repo-specific engineering ruleset
 
@@ -133,7 +139,7 @@ Runtime logs are queue-backed operational events, separate from durable SQLite r
 If you change runtime logging:
 
 - keep `README.md`, `config.yaml.example`, and tests aligned
-- keep `/admin/health.runtime_logging` shape aligned with code
+- keep the `runtime_logging` field in `GET /admin/health` aligned with code
 - preserve the `concise` / `verbose` / `debug` contract
 - remember that debug mode is intentionally very chatty
 - keep cancellation of background tokenizer preloads as a debug-only expected event rather than a warning-level failure
@@ -154,7 +160,7 @@ If you touch `src/tokens.py`:
 - preserve safe Hugging Face `AutoTokenizer` usage for resolvable non-OAI families
 - keep alias normalization tested explicitly
 - keep the heuristic classifier and profile tables aligned with regression tests
-- document any operator-visible change to `/admin/health.token_estimation_review`
+- document any operator-visible change to `GET /admin/health -> token_estimation_review`
 
 ### Benchmark ingestion
 
@@ -204,6 +210,7 @@ Update docs in the same change whenever you alter:
 In practice, that usually means updating one or more of:
 
 - `README.md`
+- `TESTING.md`
 - `IMPLEMENTATION_GUIDE.md`
 - `CONTRIBUTING.md`
 - `config.yaml.example`

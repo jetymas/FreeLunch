@@ -98,7 +98,7 @@ _TIKTOKEN_MODEL_PREFIX_ENCODINGS = (
 )
 _HF_TOKENIZER_CACHE: dict[str, Any] = {}
 _HF_TOKENIZER_FUTURES: dict[str, concurrent.futures.Future[Any | None]] = {}
-_HF_TOKENIZER_CACHE_LOCK = threading.Lock()
+_HF_TOKENIZER_CACHE_LOCK = threading.RLock()
 _HF_TOKENIZER_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 _HEURISTIC_DEFAULT_PROFILE = {
     "prose_bytes_per_token": 5.2,
@@ -494,9 +494,8 @@ def schedule_tokenizer_preload(model_hint: str | None) -> bool:
         existing = _HF_TOKENIZER_FUTURES.get(normalized_hint)
         if existing is not None and not existing.done():
             return False
-    executor = _ensure_hf_tokenizer_executor()
-    future = executor.submit(_load_hf_tokenizer_blocking, normalized_hint)
-    with _HF_TOKENIZER_CACHE_LOCK:
+        executor = _ensure_hf_tokenizer_executor()
+        future = executor.submit(_load_hf_tokenizer_blocking, normalized_hint)
         _HF_TOKENIZER_FUTURES[normalized_hint] = future
 
     def _complete(completed: concurrent.futures.Future[Any | None]) -> None:

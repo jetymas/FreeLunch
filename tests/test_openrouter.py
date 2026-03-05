@@ -126,7 +126,9 @@ class _DummyProviderAdapter:
 
 
 def test_openrouter_runtime_state_reflects_api_key_or_dev_stub():
-    assert OpenRouterAdapter(api_key="", dev_stub_enabled=False).runtime_state() == ProviderRuntimeState(
+    assert OpenRouterAdapter(
+        api_key="", dev_stub_enabled=False
+    ).runtime_state() == ProviderRuntimeState(
         discovery_available=False,
         inference_available=False,
     )
@@ -136,7 +138,9 @@ def test_openrouter_runtime_state_reflects_api_key_or_dev_stub():
             inference_available=True,
         )
     )
-    assert OpenRouterAdapter(api_key="", dev_stub_enabled=True).runtime_state() == ProviderRuntimeState(
+    assert OpenRouterAdapter(
+        api_key="", dev_stub_enabled=True
+    ).runtime_state() == ProviderRuntimeState(
         discovery_available=True,
         inference_available=True,
     )
@@ -261,6 +265,38 @@ async def test_discover_models_defaults_streaming_and_max_tokens_from_row_when_p
     assert models[0]["supports_tools"] == 0
     assert models[0]["supports_structured_output"] == 0
     assert models[0]["max_output_tokens"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_discover_models_treats_streaming_as_supported_when_parameter_list_omits_stream(
+    monkeypatch,
+):
+    adapter = OpenRouterAdapter(api_key="test-key")
+
+    async def fake_request(self, method, path, *, json_body=None, timeout_seconds):
+        return _response(
+            200,
+            json_body={
+                "data": [
+                    {
+                        "id": "qwen/qwen3-next-80b-a3b-instruct:free",
+                        "name": "Qwen 3 Next",
+                        "context_length": 65536,
+                        "architecture": {"tokenizer": "Qwen3"},
+                        "supported_parameters": ["tools", "response_format"],
+                        "pricing": {"prompt": "0", "completion": "0"},
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(OpenRouterAdapter, "_request_with_retries", fake_request)
+
+    models = await adapter.discover_models()
+
+    assert models[0]["supports_streaming"] == 1
+    assert models[0]["supports_tools"] == 1
+    assert models[0]["supports_structured_output"] == 1
 
 
 @pytest.mark.asyncio

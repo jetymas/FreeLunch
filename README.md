@@ -11,7 +11,7 @@
 [![Docker](https://img.shields.io/badge/docker-supported-2496ED)](./docker-compose.yml)
 [![FastAPI](https://img.shields.io/badge/FastAPI-OpenAI--compatible-009688)](https://fastapi.tiangolo.com/)
 
-[Quick Start](#quick-start) · [How It Works](#how-it-works) · [Project Model](#project-model) · [Docs Map](#documentation-map)
+[Quick Start](#quick-start) · [How It Works](#how-it-works) · [Project Model](#project-model) · [Testing Guide](./TESTING.md) · [Docs Map](#documentation-map)
 
 </div>
 
@@ -34,7 +34,8 @@ Model/provider availability changes constantly. FreeLunch gives clients one stab
 
 1. Prerequisites:
    - Docker + Compose v2 must already be installed and running.
-   - At least one provider key (OpenRouter key for the default setup).
+   - Installer bootstrap requires `OPENROUTER_API_KEY`.
+   - Additional provider keys can be added post-install by enabling those providers in `config.yaml`.
    - The installer validates Docker; it does not install Docker for you.
 2. Install (pick one):
 
@@ -53,7 +54,7 @@ irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex
 3. Set API keys:
    - Installer flow: keys are stored in `~/.freelunch/.env` (Windows: `%USERPROFILE%\\.freelunch\\.env`).
    - Repo/docker-compose flow: copy `.env.example` to `.env` and set keys there.
-   - Required for default provider: `OPENROUTER_API_KEY`.
+   - Required for installer/default provider bootstrap: `OPENROUTER_API_KEY`.
    - Optional gateway auth key: `GATEWAY_API_KEY` (clients then send `Authorization: Bearer <key>`).
 
 Example `.env` values:
@@ -101,6 +102,12 @@ Most OpenAI-compatible clients only need a base URL and model name.
 - API key: many clients require a value; if so, use any placeholder unless your deployment enforces gateway auth
 
 If `GATEWAY_API_KEY` is set, send `Authorization: Bearer <your-key>` with requests.
+
+## Security Notes
+
+- Keep real provider keys only in local `.env` files or your deployment secret store; do not commit populated secrets.
+- Rotate all provider and gateway keys before/at public release, then restart the gateway so runtime picks up rotated credentials.
+- Treat leaked keys as compromised even if exposure was brief, and replace them immediately.
 
 ## How It Works
 
@@ -213,6 +220,9 @@ classDiagram
 ## Documentation Map
 
 - `README.md`: user onboarding and day-1 usage
+- `TESTING.md`: canonical testing strategy, quality targets, and validation roadmap
+- `RELEASE_VALIDATION_MATRIX.md`: manual cross-platform release sign-off checklist and evidence template
+- `RELEASE_VALIDATION_EVIDENCE.md`: executed release-matrix results and blocker tracking
 - `IMPLEMENTATION_GUIDE.md`: deep technical internals (canonical implementation reference)
 - `OPERATIONS.md`: operator runbook
 - `CONTRIBUTING.md`: developer workflow
@@ -230,13 +240,18 @@ Use these controls to inspect runtime behavior and tune the gateway:
 - For installer deployments, edit `~/.freelunch/config.yaml` and restart the container.
 - You can also change allowed keys live with `PUT /admin/config/{key}` (stored as overrides in SQLite).
 
-Common options worth knowing:
+Runtime-overridable keys (via `PUT /admin/config/{key}`):
+
+- `routing.max_attempts`
+- `logging.runtime_verbosity`
+- `health.probe_interval_minutes`
+
+Config/env + restart keys (not runtime-overridable):
 
 - `providers.enabled`
 - `providers.<id>.enabled`
 - `providers.<id>.inference_enabled`
-- `routing.max_attempts`
-- `logging.runtime_verbosity`
+- provider API key env vars such as `OPENROUTER_API_KEY`
 
 Quick admin requests:
 
@@ -247,6 +262,9 @@ Quick admin requests:
 curl http://localhost:8000/admin/health
 curl http://localhost:8000/admin/config
 curl "http://localhost:8000/admin/logs?limit=50"
+curl -X PUT http://localhost:8000/admin/config/logging.runtime_verbosity \
+  -H "Content-Type: application/json" \
+  -d "{\"value\":\"debug\"}"
 ```
 
 ## Quick Structure Snapshot
@@ -651,7 +669,7 @@ Queue behavior:
 - warning-and-above records still attempt fallback emission
 - runtime logging is designed not to stall the hot request path
 
-`/admin/health.runtime_logging` reports:
+`GET /admin/health` includes a `runtime_logging` object with:
 
 - `enabled`
 - `verbosity`
@@ -760,7 +778,7 @@ The gateway records review evidence in `request_log`, including:
 - selected context window snapshot
 - provider-reported prompt tokens when available
 
-`/admin/health.token_estimation_review` summarizes the last 7 days and is intended for manual operator review.
+`GET /admin/health` includes `token_estimation_review`, which summarizes the last 7 days for manual operator review.
 
 Key fields/operators should watch:
 
@@ -1009,13 +1027,13 @@ For a real deployment:
 3. leave runtime logging enabled at `concise` unless diagnosing something specific
 4. watch `/readyz` and `/admin/health`
 5. treat benchmark refresh failures as enrichment degradation, not an immediate outage
-6. treat `/admin/health.token_estimation_review.review_flags` as manual investigation triggers
+6. treat `GET /admin/health -> token_estimation_review.review_flags` as manual investigation triggers
 
 If you do not want outbound Hugging Face tokenizer downloads:
 
 - the gateway still works
 - unresolved families fall back to heuristics
-- use `/admin/health.token_estimation_review` to watch for drift
+- use `GET /admin/health -> token_estimation_review` to watch for drift
 
 If you do allow Hugging Face tokenizer access:
 
