@@ -609,9 +609,7 @@ def mark_success(
 
 
 def _provider_probe_enabled(settings: Settings, provider_id: str) -> bool:
-    if provider_id == "openrouter":
-        return settings.openrouter_active_probe_enabled
-    return True
+    return settings.is_provider_active_probe_enabled(provider_id)
 
 
 def _select_bootstrap_candidates(

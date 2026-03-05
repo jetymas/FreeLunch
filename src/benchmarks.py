@@ -188,6 +188,48 @@ def _parse_chatbot_arena_snapshot(payload: Any) -> dict[str, float]:
     return {}
 
 
+def _parse_rows_length_limit(exc: httpx.HTTPStatusError) -> int | None:
+    if exc.response.status_code != 422:
+        return None
+    message = ""
+    try:
+        payload = exc.response.json()
+        if isinstance(payload, dict):
+            message = str(payload.get("error") or "")
+    except ValueError:
+        message = exc.response.text
+
+    match = re.search(r"must not be greater than\s+(\d+)", message)
+    if match is None:
+        return None
+    limit = int(match.group(1))
+    return limit if limit > 0 else None
+
+
+def _open_llm_model_name(row: dict[str, Any]) -> str:
+    return str(
+        row.get("fullname")
+        or row.get("eval_name")
+        or row.get("model")
+        or row.get("Model")
+        or ""
+    )
+
+
+def _open_llm_average_score(row: dict[str, Any]) -> float | None:
+    for key in ("Average ⬆️", "Average", "average"):
+        score = _safe_float(row.get(key))
+        if score is not None:
+            return score
+    for key, value in row.items():
+        if "average" not in str(key).strip().lower():
+            continue
+        score = _safe_float(value)
+        if score is not None:
+            return score
+    return None
+
+
 async def fetch_chatbot_arena_scores(
     client: httpx.AsyncClient,
 ) -> dict[str, float]:
@@ -274,22 +316,25 @@ async def fetch_open_llm_scores(
 
     scores: dict[str, float] = {}
     effective_page_size = max(min(int(page_size), _OPEN_LLM_MAX_ROWS_PAGE_SIZE), 1)
-    for offset in range(0, num_rows, effective_page_size):
-        try:
-            rows = await _fetch_open_llm_rows_page(
-                client,
-                offset=offset,
-                length=effective_page_size,
-            )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 422 or effective_page_size <= 1:
-                raise
-            effective_page_size = min(effective_page_size, _OPEN_LLM_MAX_ROWS_PAGE_SIZE)
-            rows = await _fetch_open_llm_rows_page(
-                client,
-                offset=offset,
-                length=effective_page_size,
-            )
+    offset = 0
+    while offset < num_rows:
+        while True:
+            try:
+                rows = await _fetch_open_llm_rows_page(
+                    client,
+                    offset=offset,
+                    length=effective_page_size,
+                )
+                break
+            except httpx.HTTPStatusError as exc:
+                max_rows_limit = _parse_rows_length_limit(exc)
+                if max_rows_limit is None or effective_page_size <= 1:
+                    raise
+                if max_rows_limit >= effective_page_size:
+                    effective_page_size = max(effective_page_size // 2, 1)
+                else:
+                    effective_page_size = max_rows_limit
+                continue
 
         for wrapped_row in rows:
             if not isinstance(wrapped_row, dict):
@@ -297,8 +342,14 @@ async def fetch_open_llm_scores(
             row = wrapped_row.get("row", {})
             if not isinstance(row, dict):
                 continue
-            model_name = str(row.get("fullname") or row.get("eval_name") or "")
-            _update_score(scores, model_name, _safe_float(row.get("Average ⬆️")))
+            model_name = _open_llm_model_name(row)
+            _update_score(scores, model_name, _open_llm_average_score(row))
+
+        fetched_count = len(rows)
+        if fetched_count <= 0:
+            break
+        offset += fetched_count
+
     return scores
 
 

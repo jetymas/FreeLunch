@@ -14,20 +14,59 @@ from src.health import (
     mark_success,
     run_health_checks,
 )
-from src.providers.base import ChatResult
+from src.providers.base import ChatResult, ProviderRuntimeState, StreamResult
 from src.providers.registry import ProviderRegistry
 
 
-def _insert_model(db: Database, model_id: str) -> None:
+class _DummyProbeProvider:
+    name = "dummy"
+
+    def runtime_state(self) -> ProviderRuntimeState:
+        return ProviderRuntimeState(discovery_available=True, inference_available=True)
+
+    def categorize_error(self, status_code, error_code, message):
+        return "PROVIDER_UNAVAILABLE", True
+
+    async def discover_models(self):
+        return []
+
+    async def chat_completions(self, request_body, model):
+        return ChatResult(payload={"id": "dummy", "model": model})
+
+    async def stream_chat_completions(self, request_body, model):
+        async def gen():
+            yield b"data: [DONE]\n\n"
+
+        return StreamResult(events=gen())
+
+    async def probe(self, model, *, max_tokens=1, timeout_seconds=15):
+        return ChatResult(payload={"id": "dummy-probe", "model": model})
+
+
+def _insert_model(
+    db: Database,
+    model_id: str,
+    *,
+    provider_id: str = "openrouter",
+    provider_model_id: str | None = None,
+) -> None:
     now = utc_now_iso()
     db.writer.enqueue(
         """
         INSERT INTO models(
             id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
             discovered_at, last_seen_at, is_active, is_healthy
-        ) VALUES (?, ?, 'openrouter', ?, 'https://example.com', 'OPENROUTER_API_KEY', ?, ?, 1, 1)
+        ) VALUES (?, ?, ?, ?, 'https://example.com', ?, ?, ?, 1, 1)
         """,
-        (model_id, model_id, model_id, now, now),
+        (
+            model_id,
+            model_id,
+            provider_id,
+            provider_model_id or model_id,
+            f"{provider_id.upper()}_API_KEY",
+            now,
+            now,
+        ),
     )
 
 
@@ -176,6 +215,30 @@ async def test_run_health_checks_recovers_stale_model(tmp_path, monkeypatch):
     assert outcome["recovered"] == 1
     assert row is not None
     assert tuple(row) == (1, 0, 42.0, 21.0)
+
+
+@pytest.mark.asyncio
+async def test_run_health_checks_respects_provider_active_probe_gate_for_non_openrouter(tmp_path):
+    db = Database(str(tmp_path / "health-probe-gating.db"))
+    db.init()
+    db.writer.start()
+    _insert_model(db, "dummy-model", provider_id="dummy")
+    db.writer.flush()
+
+    registry = ProviderRegistry()
+    registry.register(_DummyProbeProvider())
+    settings = Settings(
+        health_max_probes_per_run=1,
+        health_daily_request_budget_by_provider={"dummy": 5},
+        provider_active_probe_enabled={"dummy": False},
+    )
+
+    outcome = await run_health_checks(db, registry, settings)
+    db.writer.flush()
+    db.writer.stop()
+
+    assert outcome["probed"] == 0
+    assert outcome["skipped"] == 1
 
 
 def test_get_provider_probe_usage_counts_bootstrap_and_probe(tmp_path):

@@ -11,9 +11,21 @@ FreeLunch is a single-node service with:
 - one dedicated SQLite writer thread
 - one queued runtime logging listener
 - one APScheduler instance
-- one production provider integration: OpenRouter
+- one default provider integration: OpenRouter
+- optional API-key provider modules (OpenAI, Together, Groq, DeepSeek, xAI, Cerebras, Perplexity, Nvidia) enabled by config
 
-This is an intentionally simple operational model. FreeLunch is not designed around horizontal scaling, distributed state, or multiple provider integrations at once.
+This is an intentionally simple operational model. FreeLunch is not designed around horizontal scaling or distributed state, and multi-provider operation should be treated as controlled, single-node orchestration rather than high-scale fan-out.
+
+## 1.1 Transition Note (March 2026)
+
+Provider-platform generalization for module-only API-key provider onboarding is now landed.
+
+Operationally, this means:
+
+- OpenRouter remains the default and most battle-tested production path
+- additional API-key providers are available through module-plus-config onboarding
+- readiness is provider-agnostic and depends on at least one runtime-capable, routable provider model
+- maintenance focus moves to benchmark-ingestion resilience and multi-provider regression hardening
 
 ## 2. Deployment Modes
 
@@ -40,8 +52,8 @@ Important development distinction:
 
 Before considering a deployment healthy:
 
-1. Set a real `OPENROUTER_API_KEY`.
-2. Keep `providers.openrouter.dev_stub_enabled: false`.
+1. Configure at least one real provider API key (`OPENROUTER_API_KEY` or provider-specific key env selected via `providers.<id>.api_key_env`).
+2. Keep `providers.openrouter.dev_stub_enabled: false` for production.
 3. Confirm `/healthz` returns `200`.
 4. Confirm `/readyz` returns `200`.
 5. Confirm `/v1/models` returns at least one active model.
@@ -221,12 +233,35 @@ If runtime logger queue depth grows or dropped records rise unexpectedly:
 
 ### 9.1 Real Deployments
 
-Use a real `OPENROUTER_API_KEY`.
+Use at least one real provider key.
 
 Production guidance:
 
 - `APP_ENV=prod`
 - `providers.openrouter.dev_stub_enabled=false`
+- keep `providers.enabled` aligned with the providers that have valid credentials
+- set `providers.<id>.api_key_env` where non-default env var names are required
+
+For OpenAI-compatible providers, credential resolution order is:
+
+1. env var named by `providers.<id>.api_key_env`
+2. fallback inline `providers.<id>.api_key` if present
+
+Default env var names:
+
+- `openai`: `OPENAI_API_KEY`
+- `together`: `TOGETHER_API_KEY`
+- `groq`: `GROQ_API_KEY`
+- `deepseek`: `DEEPSEEK_API_KEY`
+- `xai`: `XAI_API_KEY`
+- `cerebras`: `CEREBRAS_API_KEY`
+- `perplexity`: `PERPLEXITY_API_KEY`
+- `nvidia`: `NVIDIA_API_KEY`
+
+Operational interpretation:
+
+- if provider is enabled but its key is missing, runtime gating should disable discovery/inference for that provider and keep it out of routing
+- this is expected behavior, not a startup crash condition
 
 ### 9.2 Development Stub
 
@@ -260,6 +295,8 @@ Current hardening includes:
 - freshness windows per source
 - backward walking across parseable Chatbot Arena artifacts
 - Open LLM row-page limit compatibility
+- dynamic adaptation when dataset-server lowers accepted `rows.length`
+- Open LLM score/model-column fallbacks when upstream column names drift
 
 ### 10.3 Operator Expectations
 
@@ -420,6 +457,34 @@ Guidelines:
 - prefer `max_tokens=1`
 - do not run broad matrices unless there is a concrete reason
 
+### 15.1 Optional Manual Live-Provider Smoke Harness
+
+Use the included smoke harness:
+
+```bash
+python scripts/provider_smoke.py --help
+python scripts/provider_smoke.py --json
+```
+
+Examples:
+
+```bash
+python scripts/provider_smoke.py
+python scripts/provider_smoke.py --provider openrouter --provider openai
+python scripts/provider_smoke.py --config config.yaml --json
+```
+
+Run in budget-aware mode and execute one minimal check per targeted provider first.
+
+Pass/skip/fail interpretation:
+
+- pass:
+  provider discovery smoke succeeded and returned at least one model
+- skip:
+  provider intentionally disabled or missing key for its configured `providers.<id>.api_key_env`; runtime-disabled provider path is expected
+- fail:
+  provider enabled but unregistered, or keyed-enabled provider fails discovery due transport/provider/runtime errors
+
 ## 16. Incident Patterns
 
 ### 16.1 `/readyz` returns `503`
@@ -486,5 +551,14 @@ python -m mypy src
 python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
 python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
 ```
+
+Python 3.14 warning-hygiene baseline for validation environments:
+
+- `fastapi==0.115.14`
+- `starlette==0.46.2`
+- `pytest==8.4.2`
+- `pytest-asyncio==0.26.0`
+
+Remaining deprecation warnings are upstream framework/plugin noise and are filtered narrowly in `pyproject.toml` (`tool.pytest.ini_options.filterwarnings`) for specific warning signatures in `fastapi.routing` and `pytest_asyncio.plugin`.
 
 For live-provider smoke tests, keep commands focused and budget-aware.

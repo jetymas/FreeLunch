@@ -20,11 +20,20 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 - More robust benchmark ingestion that walks backward through parseable Chatbot Arena artifacts and respects the current Open LLM dataset-server row-page limit.
 - Stronger direct OpenRouter adapter coverage for retry exhaustion, raw-body error parsing, dev-stub behavior, and streaming transport/setup failures.
 - A dedicated `OPERATIONS.md` runbook covering deployment posture, admin endpoint interpretation, runtime logging, token-estimation review, and live validation guidance.
+- Provider-agnostic adapter contract hooks (`runtime_state`, generic error categorization) and generic provider registration support in `ProviderRegistry`.
+- Provider-neutral ranking metadata column `provider_rank` with migration/backfill compatibility from legacy `openrouter_rank`.
+- Descriptor/factory-driven provider bootstrap (`register_configured`) so new provider modules can register without `main.py` rewrites.
+- Shared OpenAI-compatible provider adapter base plus first-wave API-key provider modules (`openai`, `together`, `groq`, `deepseek`, `xai`, `cerebras`, `perplexity`, `nvidia`).
+- Direct provider-contract tests for OpenAI-compatible discovery/chat/stream/probe/error-normalization invariants.
+- Multi-provider startup/runtime-gating regressions across first-wave provider modules, including no-key disablement and provider-agnostic stream error categorization checks.
+- Optional manual live-provider smoke harness (`scripts/provider_smoke.py`) with pass/fail/skip reporting and JSON output, plus focused smoke-harness tests.
 
 ### Changed
 
 - Discovery now performs best-effort external benchmark refresh before provider upserts and joins cached benchmark data into discovered model rows using normalized model names.
 - Benchmark refresh now honors per-source cache freshness and prefers richer parseable Chatbot Arena artifacts before weaker fallback CSVs.
+- Open LLM refresh now adapts to dynamic dataset-server row limits and accepts fallback average-score column naming when the canonical column changes.
+- Dependency baselines were modernized for Python 3.14 test hygiene (`fastapi`, `starlette`, `pytest`, `pytest-asyncio`) while preserving existing runtime behavior.
 - Request sizing now accounts for structured message metadata and uses exact tokenizer counts for OpenAI-compatible families plus resolvable non-OpenAI Hugging Face families instead of relying only on heuristics.
 - Successful Hugging Face tokenizer loads are now cached in-process while transient tokenizer-load failures are retried on later requests instead of being memoized as permanent misses.
 - Discovery now best-effort schedules Hugging Face tokenizer preloads in the background so uncached non-OAI exact sizing can warm asynchronously instead of forcing the request path to wait for first-use loads.
@@ -38,6 +47,10 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 - The release workflow now builds multi-arch images with cache, publishes richer semver tags, and creates GitHub releases.
 - The README, contributing guide, and config example now describe the implemented operator workflow, runtime logging model, token-estimation pipeline, benchmark resilience, provider gating semantics, and current production posture in more depth.
 - `FREELUNCH_SPEC_v8.md` now reflects the current repository scope and accepted policies instead of older aspirational multi-section build guidance.
+- Spec/gap/tasks/agent/operator docs now reflect landed provider-platform generalization and first-wave module onboarding.
+- Proxy stream error parsing now routes through provider-agnostic categorization callbacks instead of directly importing OpenRouter categorization logic.
+- Runtime provider gating and probe controls are now represented with provider-agnostic maps while retaining OpenRouter compatibility behavior.
+- Provider onboarding is now module-plus-config driven via `src.providers.<provider_id>` descriptors/factories instead of provider-specific bootstrap wiring in `src/main.py`.
 
 ### Fixed
 
@@ -55,6 +68,7 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 - Discovery now applies cached benchmark scores from `leaderboard_cache` via normalized model-name matching.
 - The proxy now handles exhausted `CONTEXT_EXCEEDED` failures more cleanly.
 - Cancelled background Hugging Face tokenizer preloads during shutdown no longer emit misleading warning-level failure logs with empty error text.
+- Python 3.14 test output now suppresses known upstream-only asyncio deprecation warnings using narrowly scoped pytest filters for `fastapi.routing` and `pytest_asyncio.plugin`.
 
 ### Infrastructure
 

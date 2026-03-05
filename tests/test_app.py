@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import sys
+import types
 from datetime import datetime, timezone
 
 import pytest
@@ -8,7 +10,13 @@ import yaml
 from fastapi.testclient import TestClient
 
 from src.db import Database, utc_now_iso
-from src.providers.base import ProviderRetryableError, StreamResult
+from src.providers.base import (
+    ChatResult,
+    ProviderRetryableError,
+    ProviderRuntimeState,
+    StreamResult,
+)
+from src.providers.openai import OpenAIAdapter
 from src.providers.openrouter import OpenRouterAdapter
 
 
@@ -491,6 +499,392 @@ def test_admin_config_rejects_unknown_override_key(client):
     assert response.status_code == 400
 
 
+def test_admin_config_accepts_provider_agnostic_probe_override_key(client):
+    response = client.put(
+        "/admin/config/providers.dummy.active_probe_enabled",
+        json={"value": False},
+    )
+    assert response.status_code == 200
+    assert client.app.state.settings.is_provider_active_probe_enabled("dummy") is False
+    effective = client.get("/admin/config").json()["effective"]
+    assert effective["providers.dummy.active_probe_enabled"] is False
+
+
+def test_provider_module_descriptor_bootstraps_registration(tmp_path, monkeypatch):
+    from src.providers.registry import ProviderBootstrapContext, ProviderBootstrapDescriptor
+
+    class DummyFactoryAdapter:
+        name = "dummyfactory"
+
+        def __init__(self, bootstrap_label: str) -> None:
+            self.bootstrap_label = bootstrap_label
+
+        def runtime_state(self) -> ProviderRuntimeState:
+            return ProviderRuntimeState(discovery_available=True, inference_available=True)
+
+        def categorize_error(self, status_code, error_code, message):
+            return "PROVIDER_UNAVAILABLE", True
+
+        async def discover_models(self):
+            return [
+                {
+                    "id": "dummyfactory/free",
+                    "name": "dummyfactory/free",
+                    "provider_id": "dummyfactory",
+                    "provider_model_id": "dummyfactory/free",
+                    "provider_base_url": "https://dummy.example/v1",
+                    "provider_api_key_env": "DUMMY_API_KEY",
+                    "context_window": 4096,
+                    "supports_streaming": 1,
+                    "supports_tools": 1,
+                    "supports_vision": 0,
+                    "supports_structured_output": 0,
+                    "supports_system_messages": 1,
+                    "provider_rank": 1,
+                    "is_healthy": 1,
+                }
+            ]
+
+        async def chat_completions(self, request_body, model):
+            return ChatResult(
+                payload={
+                    "id": "chatcmpl-dummy",
+                    "object": "chat.completion",
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "dummy reply"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            )
+
+        async def stream_chat_completions(self, request_body, model):
+            async def gen():
+                yield b"data: [DONE]\n\n"
+
+            return StreamResult(events=gen())
+
+        async def probe(self, model, *, max_tokens=1, timeout_seconds=15):
+            return await self.chat_completions({"messages": []}, model)
+
+    def _build_dummy_adapter(context: ProviderBootstrapContext):
+        bootstrap_label = str(context.provider_config.get("bootstrap_label", "missing"))
+        return DummyFactoryAdapter(bootstrap_label)
+
+    module_name = "src.providers.dummyfactory"
+    dummy_module = types.ModuleType(module_name)
+    dummy_module.PROVIDER_BOOTSTRAP_DESCRIPTOR = ProviderBootstrapDescriptor(
+        provider_id="dummyfactory",
+        factory=_build_dummy_adapter,
+    )
+    monkeypatch.setitem(sys.modules, module_name, dummy_module)
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - dummyfactory
+  openrouter:
+    enabled: false
+  dummyfactory:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    bootstrap_label: configured
+""",
+    ) as client:
+        registered = client.app.state.registry.get_registered("dummyfactory")
+        assert registered.name == "dummyfactory"
+        assert registered.discovery_enabled is True
+        assert registered.inference_enabled is True
+        assert isinstance(registered.adapter, DummyFactoryAdapter)
+        assert registered.adapter.bootstrap_label == "configured"
+
+        ready = client.get("/readyz")
+        assert ready.status_code == 200
+
+        models = client.get("/v1/models").json()["data"]
+        assert any(item["id"] == "dummyfactory/free" for item in models)
+
+
+def test_openai_module_bootstrap_uses_provider_section_api_env_and_base(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_CUSTOM_KEY", "openai-test-key")
+
+    async def fake_discover_models(self):
+        assert self.api_key == "openai-test-key"
+        assert self.api_base == "https://openai.custom/v1"
+        return [
+            {
+                "id": "openai/gpt-4o-mini",
+                "name": "gpt-4o-mini",
+                "provider_id": "openai",
+                "provider_model_id": "gpt-4o-mini",
+                "provider_base_url": self.api_base,
+                "provider_api_key_env": self.provider_api_key_env,
+                "context_window": 128000,
+                "supports_streaming": 1,
+                "supports_tools": 1,
+                "supports_vision": 1,
+                "supports_structured_output": 1,
+                "supports_system_messages": 1,
+                "provider_rank": 1,
+                "is_healthy": 1,
+            }
+        ]
+
+    monkeypatch.setattr(OpenAIAdapter, "discover_models", fake_discover_models)
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - openai
+  openrouter:
+    enabled: false
+  openai:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    api_base: https://openai.custom/v1
+    api_key_env: OPENAI_CUSTOM_KEY
+""",
+    ) as client:
+        registered = client.app.state.registry.get_registered("openai")
+        assert registered.discovery_enabled is True
+        assert registered.inference_enabled is True
+        assert isinstance(registered.adapter, OpenAIAdapter)
+        assert registered.adapter.api_base == "https://openai.custom/v1"
+        assert registered.adapter.provider_api_key_env == "OPENAI_CUSTOM_KEY"
+
+        ready = client.get("/readyz")
+        assert ready.status_code == 200
+
+        models = client.get("/v1/models").json()["data"]
+        assert any(item["owned_by"] == "openai" and item["id"] == "gpt-4o-mini" for item in models)
+
+
+def test_openai_runtime_gating_disables_provider_without_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - openai
+  openrouter:
+    enabled: false
+  openai:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+""",
+    ) as client:
+        registered = client.app.state.registry.get_registered("openai")
+        assert isinstance(registered.adapter, OpenAIAdapter)
+        assert registered.discovery_enabled is False
+        assert registered.inference_enabled is False
+        assert client.app.state.registry.all() == []
+        with pytest.raises(KeyError):
+            client.app.state.registry.get("openai")
+
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "api_key_env"),
+    [
+        ("together", "TOGETHER_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
+        ("deepseek", "DEEPSEEK_API_KEY"),
+        ("xai", "XAI_API_KEY"),
+        ("cerebras", "CEREBRAS_API_KEY"),
+        ("perplexity", "PERPLEXITY_API_KEY"),
+        ("nvidia", "NVIDIA_API_KEY"),
+    ],
+)
+def test_openai_compatible_runtime_gating_disables_provider_without_api_key(
+    tmp_path,
+    monkeypatch,
+    provider_id: str,
+    api_key_env: str,
+):
+    monkeypatch.delenv(api_key_env, raising=False)
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        f"""
+providers:
+  enabled:
+    - {provider_id}
+  openrouter:
+    enabled: false
+  {provider_id}:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+""",
+    ) as client:
+        registered = client.app.state.registry.get_registered(provider_id)
+        assert registered.adapter.name == provider_id
+        assert registered.discovery_enabled is False
+        assert registered.inference_enabled is False
+        assert client.app.state.registry.all() == []
+        with pytest.raises(KeyError):
+            client.app.state.registry.get(provider_id)
+
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+
+
+def test_missing_openai_key_deactivates_persisted_models(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    db = Database(str(tmp_path / "freelunch.db"))
+    db.init()
+    db.writer.start()
+    now = utc_now_iso()
+    db.writer.enqueue(
+        """
+        INSERT INTO models(
+            id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
+            context_window, supports_streaming, supports_tools, supports_vision, supports_structured_output,
+            supports_system_messages, composite_score, discovered_at, last_seen_at, is_active, is_healthy
+        ) VALUES (
+            'openai/stale-model',
+            'stale-model',
+            'openai',
+            'stale-model',
+            'https://api.openai.com/v1',
+            'OPENAI_API_KEY',
+            8192,
+            1,
+            1,
+            0,
+            0,
+            1,
+            10.0,
+            ?,
+            ?,
+            1,
+            1
+        )
+        """,
+        (now, now),
+    )
+    db.writer.flush()
+    db.writer.stop()
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - openai
+  openrouter:
+    enabled: false
+  openai:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+""",
+    ) as client:
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+
+        with client.app.state.db.read_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT is_active
+                FROM models
+                WHERE id='openai/stale-model'
+                """
+            ).fetchone()
+
+        assert row is not None
+        assert int(row["is_active"] or 0) == 0
+        with pytest.raises(KeyError):
+            client.app.state.registry.get("openai")
+
+
+def test_unregistered_provider_rows_are_deactivated_when_runtime_inference_is_unavailable(
+    tmp_path, monkeypatch
+):
+    db = Database(str(tmp_path / "freelunch.db"))
+    db.init()
+    db.writer.start()
+    now = utc_now_iso()
+    db.writer.enqueue(
+        """
+        INSERT INTO models(
+            id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
+            context_window, supports_streaming, supports_tools, supports_vision, supports_structured_output,
+            supports_system_messages, composite_score, discovered_at, last_seen_at, is_active, is_healthy
+        ) VALUES (
+            'dummy/stale-model',
+            'dummy-stale-model',
+            'dummy',
+            'dummy/stale-model',
+            'https://example.com',
+            'DUMMY_API_KEY',
+            8192,
+            1,
+            1,
+            0,
+            0,
+            1,
+            10.0,
+            ?,
+            ?,
+            1,
+            1
+        )
+        """,
+        (now, now),
+    )
+    db.writer.flush()
+    db.writer.stop()
+
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - dummy
+  dummy:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+""",
+    ) as client:
+        ready = client.get("/readyz")
+        assert ready.status_code == 503
+
+        with client.app.state.db.read_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT is_active
+                FROM models
+                WHERE id='dummy/stale-model'
+                """
+            ).fetchone()
+
+        assert row is not None
+        assert int(row["is_active"] or 0) == 0
+
+
 def test_providers_enabled_can_disable_openrouter_startup(tmp_path, monkeypatch):
     with _build_client_with_config(
         tmp_path,
@@ -504,6 +898,10 @@ providers:
     ) as client:
         assert client.app.state.settings.public_settings()["providers.enabled"] == []
         assert client.app.state.settings.openrouter_enabled is False
+        registered = client.app.state.registry.get_registered("openrouter")
+        assert registered.name == "openrouter"
+        assert registered.discovery_enabled is False
+        assert registered.inference_enabled is False
         assert client.app.state.registry.all() == []
         with pytest.raises(KeyError):
             client.app.state.registry.get("openrouter")
@@ -528,6 +926,10 @@ providers:
 """,
     ) as client:
         assert client.app.state.settings.openrouter_discovery_enabled is False
+        registered = client.app.state.registry.get_registered("openrouter")
+        assert registered.name == "openrouter"
+        assert registered.discovery_enabled is False
+        assert registered.inference_enabled is True
         assert client.app.state.registry.all() == []
         provider = client.app.state.registry.get("openrouter")
         assert isinstance(provider, OpenRouterAdapter)
@@ -570,6 +972,9 @@ providers:
         client.app.state.reload_settings()
 
         assert client.app.state.settings.openrouter_inference_enabled is False
+        registered = client.app.state.registry.get_registered("openrouter")
+        assert registered.name == "openrouter"
+        assert registered.inference_enabled is False
         with pytest.raises(KeyError):
             client.app.state.registry.get("openrouter")
 

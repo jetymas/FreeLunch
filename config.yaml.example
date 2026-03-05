@@ -12,8 +12,18 @@ database:
   busy_timeout_ms: 5000
 
 providers:
+  # OpenRouter is the default provider. Additional API-key providers can be enabled
+  # module-only by adding them to this list and providing credentials.
   enabled:
     - openrouter
+    # - openai
+    # - together
+    # - groq
+    # - deepseek
+    # - xai
+    # - cerebras
+    # - perplexity
+    # - nvidia
 
   openrouter:
     enabled: true
@@ -21,7 +31,24 @@ providers:
     inference_enabled: true
     dev_stub_enabled: false   # Dev-only no-key stub. Ignored outside APP_ENV=dev.
     api_base: "https://openrouter.ai/api/v1"
-    active_probe_enabled: true
+    active_probe_enabled: true  # Provider-level active probe gate.
+
+  # OpenAI-compatible provider onboarding pattern:
+  # openai:
+  #   enabled: false
+  #   discovery_enabled: true
+  #   inference_enabled: true
+  #   active_probe_enabled: true
+  #   api_base: "https://api.openai.com/v1"
+  #   api_key_env: "OPENAI_API_KEY"
+  #
+  # together:
+  #   enabled: false
+  #   discovery_enabled: true
+  #   inference_enabled: true
+  #   active_probe_enabled: true
+  #   api_base: "https://api.together.xyz/v1"
+  #   api_key_env: "TOGETHER_API_KEY"
 
 discovery:
   interval_minutes: 30
@@ -64,6 +91,7 @@ health:
   probe_max_tokens: 1
   daily_request_budget_by_provider:
     openrouter: 5
+    # Add other provider IDs here as they are onboarded.
 
 logging:
   runtime_enabled: true       # Queue-backed JSON runtime logs emitted on a separate listener thread.

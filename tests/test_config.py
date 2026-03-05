@@ -56,3 +56,51 @@ def test_database_connections_apply_busy_timeout(tmp_path):
 
     assert row is not None
     assert row[0] == 3210
+
+
+def test_settings_from_env_builds_provider_agnostic_gating_maps(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_ACTIVE_PROBE_ENABLED", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+providers:
+  enabled:
+    - openrouter
+    - dummy
+  openrouter:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    active_probe_enabled: false
+  dummy:
+    enabled: true
+    discovery_enabled: false
+    inference_enabled: true
+    active_probe_enabled: false
+health:
+  daily_request_budget_by_provider:
+    dummy: 9
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_env(str(config_path))
+
+    assert settings.is_provider_enabled("openrouter") is True
+    assert settings.is_provider_enabled("dummy") is True
+    assert settings.is_provider_discovery_enabled("dummy") is False
+    assert settings.is_provider_inference_enabled("dummy") is True
+    assert settings.is_provider_active_probe_enabled("dummy") is False
+    assert settings.health_daily_request_budget_by_provider["openrouter"] == 5
+    assert settings.health_daily_request_budget_by_provider["dummy"] == 9
+    public = settings.public_settings()
+    assert public["providers.dummy.enabled"] is True
+    assert public["providers.dummy.discovery_enabled"] is False
+    assert public["providers.dummy.inference_enabled"] is True
+    assert public["providers.dummy.active_probe_enabled"] is False
+
+
+def test_settings_accepts_provider_agnostic_probe_override_keys():
+    assert Settings.is_overridable("providers.openrouter.active_probe_enabled") is True
+    assert Settings.is_overridable("providers.dummy.active_probe_enabled") is True
+    assert Settings.is_overridable("health.daily_request_budget_by_provider.dummy") is True

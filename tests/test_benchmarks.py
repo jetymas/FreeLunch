@@ -64,6 +64,60 @@ class _OpenLlmClient:
         )
 
 
+class _OpenLlmClientDynamicLimit:
+    def __init__(self, *, max_length: int = 50, num_rows: int = 120) -> None:
+        self.max_length = max_length
+        self.num_rows = num_rows
+
+    async def get(self, url: str, params=None):
+        request = httpx.Request("GET", url, params=params)
+        if url == benchmarks._OPEN_LLM_SIZE_URL:
+            return httpx.Response(
+                200,
+                json={"size": {"dataset": {"num_rows": self.num_rows}}},
+                request=request,
+            )
+
+        if url != benchmarks._OPEN_LLM_ROWS_URL:
+            raise AssertionError(f"unexpected url: {url}")
+
+        length = int(params["length"])
+        offset = int(params["offset"])
+        if length > self.max_length:
+            return httpx.Response(
+                422,
+                json={"error": f"Parameter 'length' must not be greater than {self.max_length}"},
+                request=request,
+            )
+
+        rows = []
+        for index in range(offset, min(offset + length, self.num_rows)):
+            rows.append({"row": {"fullname": f"model-{index}", "Average ⬆️": float(index)}})
+        return httpx.Response(
+            200,
+            json={"rows": rows},
+            request=request,
+        )
+
+
+class _OpenLlmClientAverageFallback:
+    async def get(self, url: str, params=None):
+        request = httpx.Request("GET", url, params=params)
+        if url == benchmarks._OPEN_LLM_SIZE_URL:
+            return httpx.Response(
+                200,
+                json={"size": {"dataset": {"num_rows": 1}}},
+                request=request,
+            )
+        if url != benchmarks._OPEN_LLM_ROWS_URL:
+            raise AssertionError(f"unexpected url: {url}")
+        return httpx.Response(
+            200,
+            json={"rows": [{"row": {"model": "fallback-model", "Average": 42.5}}]},
+            request=request,
+        )
+
+
 @pytest.mark.asyncio
 async def test_refresh_leaderboard_cache_merges_source_results(tmp_path, monkeypatch):
     db = Database(str(tmp_path / "benchmarks.db"))
@@ -300,6 +354,26 @@ async def test_fetch_open_llm_scores_uses_dataset_server_page_limit_fallback():
     assert len(scores) == 150
     assert scores["model 0"] == 0.0
     assert scores["model 149"] == 149.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_open_llm_scores_adapts_to_dynamic_lower_dataset_server_limit():
+    client = _OpenLlmClientDynamicLimit(max_length=50, num_rows=120)
+
+    scores = await benchmarks.fetch_open_llm_scores(client, page_size=100)
+
+    assert len(scores) == 120
+    assert scores["model 0"] == 0.0
+    assert scores["model 119"] == 119.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_open_llm_scores_accepts_average_column_fallback():
+    client = _OpenLlmClientAverageFallback()
+
+    scores = await benchmarks.fetch_open_llm_scores(client, page_size=100)
+
+    assert scores == {"fallback model": 42.5}
 
 
 @pytest.mark.asyncio

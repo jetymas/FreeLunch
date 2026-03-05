@@ -3,7 +3,7 @@
 
 | Field | Value |
 |---|---|
-| Document Version | 1.3 |
+| Document Version | 1.4 |
 | Date | March 4, 2026 |
 | Status | Authoritative for current repository scope |
 | Repository | `github.com/jetymas/FreeLunch` |
@@ -74,12 +74,14 @@ The gateway prefers request-path telemetry and operator-facing summaries over ag
 
 The following are accepted repository policies:
 
-- OpenRouter is the only production provider in current scope.
+- OpenRouter is the default and most battle-tested production provider path today.
+- First-wave API-key provider modules are available for OpenAI-compatible providers (OpenAI, Together, Groq, DeepSeek, xAI, Cerebras, Perplexity, Nvidia).
 - The no-key OpenRouter stub remains available only in explicit development mode.
 - Token estimation remains local-only.
 - Exact token counting is used only when the gateway can resolve a safe local tokenizer.
 - Unresolved tokenizer families are handled by calibrated heuristics plus review telemetry, not remote counter APIs.
 - Tokenizer prewarming is not enabled by default because memory cost is not justified for the current deployment model.
+- Provider onboarding is module-driven via provider descriptors/factories; maintenance focus is regression hardening and docs/operations alignment.
 
 ## 4. Runtime Architecture
 
@@ -232,6 +234,7 @@ Important fields:
 - benchmark and provider ranking metadata
   - `chatbot_arena_elo`
   - `open_llm_score`
+  - `provider_rank`
   - `openrouter_rank`
 - health and ranking state
   - `is_healthy`
@@ -375,7 +378,7 @@ Fields:
 
 ### 7.1 Current Provider
 
-The current repository supports one production provider:
+The current shipping implementation supports one production provider:
 
 - `openrouter`
 
@@ -384,11 +387,17 @@ The current repository supports one production provider:
 Provider runtime behavior is controlled by:
 
 - `providers.enabled`
-- `providers.openrouter.enabled`
-- `providers.openrouter.discovery_enabled`
-- `providers.openrouter.inference_enabled`
+- `providers.<provider_id>.enabled`
+- `providers.<provider_id>.discovery_enabled`
+- `providers.<provider_id>.inference_enabled`
+- `providers.<provider_id>.active_probe_enabled`
+- `health.daily_request_budget_by_provider.<provider_id>`
 
 Discovery and inference are distinct concerns.
+
+Backward compatibility note:
+
+- OpenRouter-specific keys remain supported while provider-agnostic keys are the preferred contract.
 
 ### 7.3 Development Stub Policy
 
@@ -417,6 +426,26 @@ The OpenRouter adapter currently includes direct tests for:
 - streaming setup failures
 - streaming transport failures
 - dev-stub chat and stream behavior
+
+### 7.5 Landed Milestone: Module-Only API-Key Provider Onboarding
+
+The platform objective to make additional API-key providers viable without repeated core rewrites is now implemented.
+
+Landed state:
+
+- provider-specific implementation remains in `src/providers/*`
+- future API-key provider onboarding should require a provider module plus config enablement, not edits to `src/main.py`, `src/proxy.py`, `src/health.py`, or `src/config.py`
+- OpenRouter behavior remains supported and backward-compatible under the module-driven provider platform
+
+Provider family in scope for this milestone:
+
+- API-key providers with OpenAI-compatible chat/stream interfaces
+
+Explicitly out of scope for this milestone:
+
+- cookie/HAR/browser-auth providers
+- account-scraping providers
+- request-path remote token counting
 
 ## 8. Discovery And Benchmark Enrichment
 
@@ -467,6 +496,8 @@ Ranking is composite and configurable.
 - availability
 - context window
 - feature support
+
+Cold-start usage fallback uses provider-neutral rank metadata (`provider_rank`) with legacy `openrouter_rank` compatibility.
 
 ### 9.2 Ranking Constraints
 
@@ -551,6 +582,8 @@ Streaming must:
 - allow pre-first-byte failover
 - avoid mid-stream failover after bytes have been emitted
 - preserve terminal `[DONE]` semantics where applicable
+
+Stream error payload parsing in proxy orchestration must remain provider-agnostic and rely on provider categorization hooks rather than direct provider imports.
 
 ## 12. Token Estimation Pipeline
 
@@ -808,14 +841,15 @@ The repository currently enforces an 80% coverage floor in CI and materially exc
 
 ### 18.3 Live Validation
 
-When real OpenRouter credentials are available, low-cost live smoke tests are useful for:
+When real provider credentials are available, low-cost live smoke tests are useful for:
 
 - authenticated discovery
-- a tiny non-streaming completion on a free model
-- a tiny streaming completion on a free model
-- app-level readiness and `/v1/chat/completions` verification
+- app-level readiness verification
+- one minimal provider check per targeted provider
 
-These should remain minimal and budget-aware.
+The repository now includes an optional non-CI harness (`scripts/provider_smoke.py`) for this purpose.
+
+Live checks should remain minimal and budget-aware.
 
 ## 19. Documentation Requirements
 
@@ -841,7 +875,7 @@ Documentation rules:
 
 The following are intentional and should not be treated as bugs without a deliberate design decision:
 
-- OpenRouter is the only production provider
+- OpenRouter remains the default provider path for production deployments
 - the dev stub still exists, but only as explicit dev-only behavior
 - remote token-count APIs are not used
 - tokenizer prewarming is not on by default
@@ -850,10 +884,11 @@ The following are intentional and should not be treated as bugs without a delibe
 
 ## 21. Current Remaining Work
 
-The implementation is now close to spec-complete for the current accepted scope.
+The implementation remains close to spec-complete for the currently shipped OpenRouter-first behavior.
 
 Remaining work is primarily:
 
+- expanding multi-provider startup/readiness/routing regression depth
 - keeping benchmark ingestion resilient as upstream public artifacts drift
 - continuing documentation and release-history polish
 - optionally deepening probe policy sophistication if operational evidence justifies it
@@ -876,6 +911,7 @@ Primary repository files:
 - `src/providers/base.py`
 - `src/providers/openrouter.py`
 - `src/providers/registry.py`
+- `scripts/provider_smoke.py`
 - `tests/*`
 - `.github/workflows/ci.yml`
 - `.github/workflows/release.yml`
@@ -889,7 +925,7 @@ Primary repository files:
 
 ## 23. Summary
 
-FreeLunch is no longer a speculative gateway design. It is an implemented, tested, OpenRouter-first routing gateway with:
+FreeLunch is no longer a speculative gateway design. It is an implemented, tested routing gateway with:
 
 - bounded failover
 - discovery and benchmark enrichment
@@ -899,5 +935,6 @@ FreeLunch is no longer a speculative gateway design. It is an implemented, teste
 - durable request telemetry
 - admin visibility
 - installer and CI support
+- module-driven provider onboarding for first-wave OpenAI-compatible API-key providers
 
 The specification for this repository should therefore remain grounded in those concrete behaviors and the explicit policies that now govern them.

@@ -22,6 +22,66 @@ def test_init_applies_all_schema_migrations(tmp_path):
     assert versions == list(range(1, DB_SCHEMA_VERSION + 1))
 
 
+def test_migration_v6_backfills_provider_rank_from_openrouter_rank(tmp_path):
+    db_path = tmp_path / "db-migrate-v6.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+
+            CREATE TABLE models (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                provider_model_id TEXT NOT NULL,
+                provider_base_url TEXT NOT NULL,
+                provider_api_key_env TEXT NOT NULL,
+                openrouter_rank INTEGER DEFAULT NULL,
+                discovered_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            [(version, "2026-03-04T00:00:00Z") for version in range(1, 6)],
+        )
+        conn.execute(
+            """
+            INSERT INTO models(
+                id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
+                openrouter_rank, discovered_at, last_seen_at, is_active
+            ) VALUES
+                ('openrouter/model-a', 'model-a', 'openrouter', 'model-a', 'https://example.com',
+                 'OPENROUTER_API_KEY', 9, '2026-03-04T00:00:00Z', '2026-03-04T00:00:00Z', 1)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(str(db_path))
+    db.init()
+
+    with db.read_conn() as read_conn:
+        columns = {
+            str(row["name"]) for row in read_conn.execute("PRAGMA table_info(models)").fetchall()
+        }
+        row = read_conn.execute(
+            "SELECT provider_rank, openrouter_rank FROM models WHERE id='openrouter/model-a'"
+        ).fetchone()
+
+    assert "provider_rank" in columns
+    assert row is not None
+    assert row["provider_rank"] == 9
+    assert row["openrouter_rank"] == 9
+
+
 def test_set_override_uses_canonical_utc_timestamp(tmp_path):
     db = Database(str(tmp_path / "db-overrides.db"))
     db.init()
@@ -352,7 +412,8 @@ def test_discovery_upsert_preserves_extended_model_fields(tmp_path):
         row = conn.execute(
             """
             SELECT endpoint_id, provider_options_json, tokenizer_family, supports_structured_output,
-                   supports_system_messages, openrouter_rank, chatbot_arena_elo, open_llm_score
+                   supports_system_messages, provider_rank, openrouter_rank, chatbot_arena_elo,
+                   open_llm_score
             FROM models
             WHERE id='fake/model-a'
             """
@@ -366,9 +427,56 @@ def test_discovery_upsert_preserves_extended_model_fields(tmp_path):
     assert row["tokenizer_family"] == "llama3"
     assert row["supports_structured_output"] == 1
     assert row["supports_system_messages"] == 1
+    assert row["provider_rank"] == 7
     assert row["openrouter_rank"] == 7
     assert row["chatbot_arena_elo"] == 1200.0
     assert row["open_llm_score"] == 0.8
+
+
+def test_discovery_upsert_accepts_provider_neutral_rank_metadata(tmp_path):
+    import asyncio
+
+    class _ProviderRankOnlyProvider:
+        name = "fake"
+
+        async def discover_models(self):
+            return [
+                {
+                    "id": "fake/model-ranked",
+                    "name": "Model Ranked",
+                    "provider_id": "fake",
+                    "provider_model_id": "model-ranked",
+                    "provider_base_url": "https://example.com",
+                    "provider_api_key_env": "FAKE_API_KEY",
+                    "provider_rank": 3,
+                }
+            ]
+
+    class _ProviderRankRegistry:
+        def all(self):
+            return [_ProviderRankOnlyProvider()]
+
+    db = Database(str(tmp_path / "db-discovery-provider-rank.db"))
+    db.init()
+    db.writer.start()
+
+    asyncio.run(run_discovery(db, _ProviderRankRegistry()))
+    db.writer.flush()
+
+    with db.read_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT provider_rank, openrouter_rank
+            FROM models
+            WHERE id='fake/model-ranked'
+            """
+        ).fetchone()
+
+    db.writer.stop()
+
+    assert row is not None
+    assert row["provider_rank"] == 3
+    assert row["openrouter_rank"] is None
 
 
 def test_discovery_marks_models_not_seen_inactive(tmp_path):

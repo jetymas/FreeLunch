@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+from typing import cast
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -17,8 +18,13 @@ from src.health import (
     mark_failure,
     mark_success,
 )
-from src.providers.base import ProviderError, ProviderRetryableError, StreamResult
-from src.providers.openrouter import categorize_openrouter_error
+from src.providers.base import (
+    ProviderError,
+    ProviderErrorCategorization,
+    ProviderRetryableError,
+    StreamResult,
+    provider_error_from_error_payload,
+)
 from src.routing import (
     NoHealthyModelsError,
     RoutingPreferences,
@@ -204,40 +210,12 @@ def _is_comment_event(raw_event: bytes) -> bool:
     return bool(lines) and all(line.startswith(":") for line in lines)
 
 
-def _provider_error_from_event(event: dict) -> ProviderError | None:
-    error = event.get("error")
-    if not isinstance(error, dict):
-        return None
-
-    message = str(error.get("message") or "provider stream error")[:500]
-    code = error.get("code")
-    error_code = str(code) if code is not None else None
-    raw_status_code = error.get("status_code")
-    status_code = None
-    if isinstance(raw_status_code, int):
-        status_code = raw_status_code
-    elif isinstance(raw_status_code, str) and raw_status_code.isdigit():
-        status_code = int(raw_status_code)
-    elif isinstance(code, int):
-        status_code = code
-    elif isinstance(code, str) and code.isdigit():
-        status_code = int(code)
-
-    category, retryable = categorize_openrouter_error(status_code, error_code, message)
-    if retryable:
-        return ProviderRetryableError(
-            message,
-            category=category,
-            status_code=status_code,
-            error_code=error_code,
-        )
-    return ProviderError(
-        message,
-        category=category,
-        retryable=False,
-        status_code=status_code,
-        error_code=error_code,
-    )
+def _provider_error_from_event(
+    event: dict,
+    *,
+    categorize_error: Callable[[int | None, str | None, str], ProviderErrorCategorization],
+) -> ProviderError | None:
+    return provider_error_from_error_payload(event, categorize_error=categorize_error)
 
 
 async def _relay_stream(
@@ -252,6 +230,7 @@ async def _relay_stream(
     stream_result: StreamResult,
     start: float,
     token_observation: dict[str, int | str | None],
+    categorize_error: Callable[[int | None, str | None, str], ProviderErrorCategorization],
 ) -> AsyncGenerator[bytes, None]:
     done_seen = False
     prompt_tokens = None
@@ -266,7 +245,10 @@ async def _relay_stream(
         completion_tokens = usage.get("completion_tokens")
         total_tokens = usage.get("total_tokens")
     if first_payload:
-        stream_error = _provider_error_from_event(first_payload)
+        stream_error = _provider_error_from_event(
+            first_payload,
+            categorize_error=categorize_error,
+        )
 
     try:
         if not await request.is_disconnected():
@@ -283,7 +265,10 @@ async def _relay_stream(
                 completion_tokens = usage.get("completion_tokens")
                 total_tokens = usage.get("total_tokens")
             if payload:
-                parsed_error = _provider_error_from_event(payload)
+                parsed_error = _provider_error_from_event(
+                    payload,
+                    categorize_error=categorize_error,
+                )
                 if parsed_error is not None:
                     stream_error = parsed_error
             yield raw_event
@@ -763,6 +748,22 @@ def build_router() -> APIRouter:
             )
             try:
                 if req.requires_streaming:
+                    def categorize_stream_error(
+                        status_code: int | None,
+                        error_code: str | None,
+                        message: str,
+                        _provider_name: str = provider_name,
+                    ) -> ProviderErrorCategorization:
+                        return cast(
+                            ProviderErrorCategorization,
+                            registry.categorize_error(
+                                _provider_name,
+                                status_code,
+                                error_code,
+                                message,
+                            ),
+                        )
+
                     stream_result = await provider.stream_chat_completions(
                         payload, model=model_name
                     )
@@ -792,6 +793,7 @@ def build_router() -> APIRouter:
                             stream_result,
                             start,
                             token_observation,
+                            categorize_stream_error,
                         ),
                         media_type="text/event-stream",
                     )

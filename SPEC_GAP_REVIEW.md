@@ -2,7 +2,9 @@
 
 ## Overall status
 
-The codebase is now a **feature-complete implementation for the repository's accepted scope**: OpenRouter-first routing, bounded failover, admin/config APIs, scheduled discovery/ranking/health jobs, queue-backed runtime logging, installer assets, and a green automated test suite. The remaining gaps are now mostly **maintenance risks and optional sophistication**, not missing core architecture.
+The codebase is now a **feature-complete implementation for the accepted OpenRouter-first scope** and a **landed first pass of multi-provider onboarding**: bounded failover, admin/config APIs, scheduled discovery/ranking/health jobs, queue-backed runtime logging, installer assets, descriptor/factory provider bootstrap, and a green automated test suite.
+
+The approved module-only provider-platform objective is now implemented for the first API-key wave: providers can be onboarded via `src/providers/<id>.py` plus config enablement without adding provider-specific logic to `src/main.py`, `src/proxy.py`, or `src/health.py`.
 
 ## What is already in place
 
@@ -20,6 +22,21 @@ The codebase is now a **feature-complete implementation for the repository's acc
 
 ## Remaining gaps and intentional boundaries
 
+### 0) Module-only API-key provider onboarding (implemented baseline, hardening ongoing)
+
+Landed in code:
+
+- `src/main.py` now uses descriptor/factory-driven provider bootstrap (`registry.register_configured(settings)`).
+- `src/providers/registry.py` loads providers through built-in and module descriptors (`src.providers.<provider_id>` with `build_provider_adapter` / `PROVIDER_BOOTSTRAP_DESCRIPTOR`).
+- Shared OpenAI-compatible adapter support is implemented in `src/providers/openai_compatible.py`.
+- First provider wave modules are present: OpenAI, Together, Groq, DeepSeek, xAI, Cerebras, Perplexity, Nvidia.
+- Provider-contract behavior is covered directly in `tests/test_openai_compatible.py` and startup/config integration tests.
+
+Residual work:
+
+- Continue using and refining the non-CI live-provider smoke harness (`scripts/provider_smoke.py`) as provider coverage broadens.
+- Keep operator docs synchronized as provider defaults, keys, and onboarding posture evolve.
+
 ### 1) Benchmark ingestion remains best-effort against unstable upstream artifacts (maintenance risk)
 
 - Discovery now refreshes external benchmark cache data before provider model upserts, and then joins cached benchmark entries into discovered model rows via normalized name matching.
@@ -27,6 +44,8 @@ The codebase is now a **feature-complete implementation for the repository's acc
 - Benchmark refresh now respects per-source cache-hour freshness and skips external fetches when cached source data is still fresh.
 - Chatbot Arena refresh now attempts direct `elo_results_*.pkl` snapshot parsing first, then falls back through older parseable snapshots, then `leaderboard_table_*.csv`, and only then to `arena_hard_auto_leaderboard_*.csv`.
 - Open LLM refresh now adapts to the current Hugging Face dataset-server row-page limit instead of assuming larger page sizes are always accepted.
+- Open LLM refresh now also adapts dynamically when the server-enforced `length` limit is lower than expected and advances offsets by returned-row count to avoid page skips.
+- Open LLM score parsing now falls back from `Average ⬆️` to `Average`/`average`-like columns and supports model-name fallbacks (`fullname` -> `eval_name` -> `model`).
 - Remaining risk: the public ELO snapshot and dataset-row schemas are not strongly contracted, so this path is still best-effort rather than guaranteed against upstream shape shifts.
 
 ### 2) Token estimation is complete for current policy, but some families remain heuristic by design (intentional boundary)
@@ -56,7 +75,7 @@ The codebase is now a **feature-complete implementation for the repository's acc
 - Queue-backed JSON runtime logging now runs through a separate listener thread with `concise`, `verbose`, and `debug` modes, and `/admin/health` surfaces `runtime_logging` status including queue depth and dropped-record counts.
 - The remaining gap in this area is now mostly about optional probe-policy sophistication rather than missing operator visibility.
 
-### 4) Configuration/runtime parity is effectively in place for the implemented feature set (low residual risk)
+### 4) Configuration/runtime parity is effectively in place for the currently shipped feature set (low residual risk)
 
 - `config.yaml.example` and `Settings` now cover the implemented gateway, discovery, routing, ranking, health, logging, and database knobs, and SQLite `busy_timeout_ms` is now applied to real connections.
 - Provider gating semantics are now implemented for `providers.enabled`, `providers.<name>.enabled`, `providers.<name>.discovery_enabled`, and `providers.<name>.inference_enabled`.
@@ -64,7 +83,7 @@ The codebase is now a **feature-complete implementation for the repository's acc
 - Runtime overrides are now applied at startup, on admin mutation, and via a periodic config-refresh job.
 - The DB writer queue is now bounded, low-priority client logs are explicitly lossy, and reserved queue capacity plus blocking backpressure protect higher-priority metadata writes.
 
-### 5) Provider realism is accepted for current scope, with one explicit dev-only escape hatch (intentional boundary)
+### 5) Provider realism is accepted for current shipped scope, with one explicit dev-only escape hatch (intentional boundary)
 
 - The OpenRouter adapter now keeps stub discovery/chat/stream behavior only behind explicit development-only mode. It is disabled by default and ignored outside `APP_ENV=dev`, which closes the main readiness/auth realism concern from the earlier review.
 - Runtime startup no longer stays ready off stale OpenRouter rows when credentials are missing, and real discovery no longer synthesizes a fake fallback row when `/models` returns no eligible entries.
@@ -76,6 +95,7 @@ The codebase is now a **feature-complete implementation for the repository's acc
   - installer coverage is still a lightweight fake-Docker smoke path rather than a full live-daemon install test
 - CI now enforces the 80% coverage floor and includes a Docker `/healthz` smoke test after image build.
 - CI also now exercises Python 3.14 explicitly alongside the older supported versions.
+- Test/dependency hygiene on Python 3.14 was improved by upgrading FastAPI/Starlette/pytest/pytest-asyncio baselines and applying narrowly scoped pytest warning filters for known third-party asyncio deprecations still present upstream.
 - CI now validates installer assets syntactically (`sh -n`, ShellCheck, and PowerShell parser checks) and runs non-interactive shell/PowerShell smoke tests against a fake Docker shim.
 - Current measured line coverage is now **90%**, above the original 80% target, and direct `src/providers/openrouter.py` coverage is now materially stronger after dedicated retry/stream/error-body tests.
 - `release.yml` now performs a multi-arch GHCR build with GHA cache, semver tag expansion, and GitHub release publishing.
@@ -84,10 +104,11 @@ The codebase is now a **feature-complete implementation for the repository's acc
 
 ## Suggested implementation order (re-baselined)
 
-1. **Keep benchmark-ingestion maintenance evidence-driven**: public Arena/Open LLM artifacts can still drift, so this path should stay well-tested whenever upstream schemas change.
-2. **Keep docs synchronized with real behavior**: the codebase is now mature enough that documentation drift is more likely than missing architecture.
+1. **Provider hardening wave**: expand multi-provider startup/readiness/routing regressions for mixed enablement and key-availability cases.
+2. **Benchmark-ingestion maintenance**: keep Chatbot Arena/Open LLM parsers aligned with upstream artifact drift.
+3. **Operator/docs maintenance**: keep provider onboarding, config examples, and runbook guidance synchronized with implementation.
 
 ## Notes
 
-- This review now treats the repository as broadly aligned with the accepted spec and policy choices. Remaining items are mostly maintenance risks, optional sophistication, and documentation discipline.
+- This review treats provider bootstrap/factory completion and first-wave module onboarding as landed.
 - `TASKS.md` is now the working backlog and should be pruned whenever a spec-facing item lands.

@@ -60,6 +60,9 @@ The repository is past scaffolding and into refinement. The current codebase inc
 - routing that filters by health, capability, context fit, and request-time preferences
 - request token estimation with exact local counters where safe and calibrated local heuristics elsewhere
 - queue-backed runtime logging with `concise`, `verbose`, and `debug` modes
+- provider-agnostic adapter/runtime hooks in registry/bootstrap paths
+- provider-agnostic stream error categorization in proxy relay orchestration
+- provider-neutral rank metadata (`provider_rank`) with backward-compatible `openrouter_rank` fallback
 - admin endpoints for models, config, health, logs, and manual refresh
 - installer scripts and CI coverage
 
@@ -69,6 +72,16 @@ Use these tracking documents together:
 - `SPEC_GAP_REVIEW.md`: current implementation-vs-spec snapshot
 - `TASKS.md`: active backlog
 - `AGENTS.md`: repo-specific engineering constraints and workflow guidance
+
+### Current provider-platform status
+
+The provider-platform refactor is landed. Additional API-key providers now use module-plus-config onboarding without provider-specific changes in core routing/proxy/health paths.
+
+Current status:
+
+- OpenRouter remains the default and most validated provider path
+- first-wave OpenAI-compatible provider modules are now present (OpenAI, Together, Groq, DeepSeek, xAI, Cerebras, Perplexity, Nvidia)
+- provider hardening is now focused on regression depth and operator guidance, not core platform rewrites
 
 ---
 
@@ -81,6 +94,7 @@ flowchart LR
     Routing --> DB[("SQLite")]
     Routing --> Registry["Provider Registry"]
     Registry --> OpenRouter["OpenRouter Adapter"]
+    Registry --> Compat["OpenAI-Compatible Adapter Modules"]
     Proxy --> Relay["Failover and SSE Relay"]
     OpenRouter --> API["OpenRouter API"]
     Jobs["Discovery / Ranking / Health / Maintenance / Config Refresh"] --> DB
@@ -663,6 +677,26 @@ There are four different control surfaces and they are intentionally distinct:
 - `providers.<name>.inference_enabled`
   - removes it from routing/probing and deactivates its rows until it is re-enabled and rediscovered
 
+### Provider key env mapping (`providers.<id>.api_key_env`)
+
+For OpenAI-compatible providers (`openai`, `together`, `groq`, `deepseek`, `xai`, `cerebras`, `perplexity`, `nvidia`), credentials are resolved from:
+
+1. environment variable named by `providers.<id>.api_key_env`
+2. fallback inline `providers.<id>.api_key` (if set)
+
+If `providers.<id>.api_key_env` is omitted, defaults are:
+
+- `openai`: `OPENAI_API_KEY`
+- `together`: `TOGETHER_API_KEY`
+- `groq`: `GROQ_API_KEY`
+- `deepseek`: `DEEPSEEK_API_KEY`
+- `xai`: `XAI_API_KEY`
+- `cerebras`: `CEREBRAS_API_KEY`
+- `perplexity`: `PERPLEXITY_API_KEY`
+- `nvidia`: `NVIDIA_API_KEY`
+
+OpenRouter remains separate and uses `OPENROUTER_API_KEY` plus `providers.openrouter.dev_stub_enabled` for explicit dev-only no-key mode.
+
 ### Logging settings
 
 ```yaml
@@ -701,7 +735,7 @@ The benchmark refresh cadence is operator-controlled:
 
 For a real deployment:
 
-1. set `OPENROUTER_API_KEY`
+1. set at least one real provider key (`OPENROUTER_API_KEY` or provider-specific key env)
 2. keep `providers.openrouter.dev_stub_enabled: false`
 3. leave runtime logging enabled at `concise` unless diagnosing something specific
 4. watch `/readyz` and `/admin/health`
@@ -732,6 +766,15 @@ python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
 python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
 ```
 
+Python 3.14 warning-hygiene baseline:
+
+- `fastapi==0.115.14`
+- `starlette==0.46.2`
+- `pytest==8.4.2`
+- `pytest-asyncio==0.26.0`
+
+Remaining deprecation noise is currently upstream and is filtered narrowly in `pyproject.toml` under `tool.pytest.ini_options.filterwarnings` for known warnings from `fastapi.routing` and `pytest_asyncio.plugin` only.
+
 Focused examples:
 
 ```bash
@@ -739,6 +782,31 @@ python -m pytest tests/test_openrouter.py -q --basetemp .pytest_tmp_openrouter -
 python -m pytest tests/test_tokens.py -q --basetemp .pytest_tmp_tokens -p no:cacheprovider
 uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+### Optional manual live-provider smoke harness
+
+Use the included script:
+
+```bash
+python scripts/provider_smoke.py --help
+python scripts/provider_smoke.py --json
+```
+
+Examples:
+
+```bash
+python scripts/provider_smoke.py
+python scripts/provider_smoke.py --provider openrouter --provider openai
+python scripts/provider_smoke.py --config config.yaml --json
+```
+
+Run in budget-aware mode (single minimal discovery check per provider first; no broad matrices by default).
+
+Pass/skip/fail interpretation:
+
+- pass: provider discovery smoke succeeded and returned at least one model
+- skip: provider intentionally not enabled or no key is configured for its `providers.<id>.api_key_env`; provider should be runtime-disabled and excluded from routing
+- fail: provider enabled but unregistered, or keyed-enabled provider fails discovery due transport/provider/runtime errors
 
 Useful manual probes:
 
@@ -756,6 +824,8 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for workflow expectations and doc-sync 
 ## Repository layout
 
 ```text
+scripts/
+└── provider_smoke.py
 src/
 ├── benchmarks.py
 ├── config.py
@@ -771,8 +841,20 @@ src/
 ├── tokens.py
 └── providers/
     ├── base.py
+    ├── openai_compatible.py
+    ├── openai.py
+    ├── together.py
+    ├── groq.py
+    ├── deepseek.py
+    ├── xai.py
+    ├── cerebras.py
+    ├── perplexity.py
+    ├── nvidia.py
     ├── registry.py
     └── openrouter.py
+tests/
+├── test_openai_compatible.py
+└── test_provider_smoke.py
 ```
 
 Key docs:
@@ -788,13 +870,11 @@ Key docs:
 
 ## Roadmap
 
-Likely future directions:
+Near-term execution direction:
 
-- additional provider adapters
-- embeddings routing
-- richer metrics export
-- optional alternate persistence backends
-- further operator/runbook depth
+- expand multi-provider startup/readiness/routing regression coverage
+- keep benchmark-ingestion parsing resilient as upstream artifacts drift
+- keep operator/install docs synchronized with runtime behavior and provider onboarding policy
 
 The current design still prioritizes:
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from src.providers.base import ChatResult, ProviderFatalError, ProviderRetryableError
+from src.providers.base import ChatResult, ProviderFatalError, ProviderRetryableError, StreamResult
+from src.providers.openai import OpenAIAdapter
 from src.providers.openrouter import OpenRouterAdapter
 
 
@@ -535,3 +536,66 @@ def test_context_exceeded_returns_400_without_penalizing_model_health(client, mo
     assert log_row["selected_tokenizer_family"] == "llama3"
     assert int(log_row["estimated_prompt_tokens"] or 0) > 0
     assert log_row["gateway_error_category"] == "CONTEXT_EXCEEDED"
+
+
+def test_stream_error_categorization_uses_openai_compatible_provider_contract(client, monkeypatch):
+    db = client.app.state.db
+    db.writer.enqueue("UPDATE models SET is_active=0 WHERE provider_id='openrouter'")
+    db.writer.enqueue(
+        """
+        INSERT INTO models(
+            id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
+            context_window, supports_streaming, supports_tools, supports_vision, supports_structured_output,
+            supports_system_messages, composite_score, discovered_at, last_seen_at, is_active, is_healthy
+        ) VALUES (
+            'openai/gpt-stream-test',
+            'gpt-stream-test',
+            'openai',
+            'gpt-stream-test',
+            'https://api.openai.com/v1',
+            'OPENAI_API_KEY',
+            8192,
+            1,
+            1,
+            0,
+            1,
+            1,
+            70.0,
+            '2026-03-04T00:00:00Z',
+            '2026-03-04T00:00:00Z',
+            1,
+            1
+        )
+        """
+    )
+    db.writer.flush()
+    client.app.state.registry.register_openai(api_key="test-key")
+    client.app.state.recompute_readiness()
+
+    async def fake_stream(self, request_body, model):
+        async def gen():
+            yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
+            yield b'data: {"error":{"message":"rate limit exceeded","code":"rate_limit_exceeded"}}\n\n'
+
+        return StreamResult(events=gen())
+
+    monkeypatch.setattr(OpenAIAdapter, "stream_chat_completions", fake_stream)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert response.status_code == 200
+    assert '"content":"partial"' in response.text
+    assert "rate limit exceeded" in response.text
+    assert "data: [DONE]" not in response.text
+
+    logs = client.get("/admin/logs?limit=2").json()["logs"]
+    assert logs[0]["success"] is False
+    assert logs[0]["provider_id"] == "openai"
+    assert logs[0]["was_streaming"] is True
+    assert logs[0]["gateway_error_category"] == "RATE_LIMITED"

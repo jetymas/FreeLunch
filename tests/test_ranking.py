@@ -98,7 +98,7 @@ def test_recompute_ranking_uses_telemetry_latency_over_stale_model_latency(tmp_p
     assert rows[0][0] == "model-fast"
 
 
-def test_recompute_ranking_uses_openrouter_rank_when_telemetry_is_insufficient(tmp_path):
+def test_recompute_ranking_uses_provider_rank_when_telemetry_is_insufficient(tmp_path):
     db = Database(str(tmp_path / "rank-cold-start.db"))
     db.init()
     db.writer.start()
@@ -108,10 +108,10 @@ def test_recompute_ranking_uses_openrouter_rank_when_telemetry_is_insufficient(t
         """
         INSERT INTO models(
             id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
-            openrouter_rank, discovered_at, last_seen_at, is_active, is_healthy
+            provider_rank, discovered_at, last_seen_at, is_active, is_healthy
         ) VALUES
-            ('model-ranked-high', 'model-ranked-high', 'openrouter', 'model-ranked-high', 'https://example.com', 'OPENROUTER_API_KEY', 1, ?, ?, 1, 1),
-            ('model-ranked-low', 'model-ranked-low', 'openrouter', 'model-ranked-low', 'https://example.com', 'OPENROUTER_API_KEY', 25, ?, ?, 1, 1)
+            ('model-ranked-high', 'model-ranked-high', 'fake', 'model-ranked-high', 'https://example.com', 'FAKE_API_KEY', 1, ?, ?, 1, 1),
+            ('model-ranked-low', 'model-ranked-low', 'fake', 'model-ranked-low', 'https://example.com', 'FAKE_API_KEY', 25, ?, ?, 1, 1)
         """,
         (now, now, now, now),
     )
@@ -128,3 +128,37 @@ def test_recompute_ranking_uses_openrouter_rank_when_telemetry_is_insufficient(t
     db.writer.stop()
 
     assert rows[0][0] == "model-ranked-high"
+
+
+def test_recompute_ranking_falls_back_to_openrouter_rank_when_provider_rank_missing(tmp_path):
+    db = Database(str(tmp_path / "rank-cold-start-legacy.db"))
+    db.init()
+    db.writer.start()
+
+    now = utc_now_iso()
+    db.writer.enqueue(
+        """
+        INSERT INTO models(
+            id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
+            openrouter_rank, discovered_at, last_seen_at, is_active, is_healthy
+        ) VALUES
+            ('openrouter/model-ranked-high', 'model-ranked-high', 'openrouter', 'model-ranked-high',
+             'https://example.com', 'OPENROUTER_API_KEY', 2, ?, ?, 1, 1),
+            ('openrouter/model-ranked-low', 'model-ranked-low', 'openrouter', 'model-ranked-low',
+             'https://example.com', 'OPENROUTER_API_KEY', 40, ?, ?, 1, 1)
+        """,
+        (now, now, now, now),
+    )
+    db.writer.flush()
+
+    recompute_ranking(db, settings=Settings())
+    db.writer.flush()
+
+    with db.read_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, composite_score FROM models ORDER BY composite_score DESC"
+        ).fetchall()
+
+    db.writer.stop()
+
+    assert rows[0][0] == "openrouter/model-ranked-high"

@@ -84,6 +84,21 @@ def _cold_start_usage_score(rank: int | None, max_rank: int) -> float:
     return _normalize_inverse(float(rank), 1.0, float(rank_floor))
 
 
+def _effective_provider_rank(provider_rank: object, openrouter_rank: object) -> int | None:
+    for value in (provider_rank, openrouter_rank):
+        if value is None:
+            continue
+        if not isinstance(value, int | float | str):
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
 def recompute_ranking(db: Database, settings: Settings | None = None) -> int:
     settings = settings or Settings()
     telemetry_by_model = _load_telemetry_by_model(db)
@@ -94,8 +109,8 @@ def recompute_ranking(db: Database, settings: Settings | None = None) -> int:
             SELECT id, is_healthy, COALESCE(chatbot_arena_elo, 0), COALESCE(open_llm_score, 0),
                    COALESCE(avg_latency_ms, 0), COALESCE(avg_ttfb_ms, 0), COALESCE(consecutive_failures, 0),
                    COALESCE(backoff_level, 0), cooldown_until, context_window, supports_tools,
-                   supports_streaming, supports_vision, supports_structured_output, openrouter_rank,
-                   chatbot_arena_elo IS NOT NULL, open_llm_score IS NOT NULL
+                   supports_streaming, supports_vision, supports_structured_output, provider_rank,
+                   openrouter_rank, chatbot_arena_elo IS NOT NULL, open_llm_score IS NOT NULL
             FROM models
             WHERE is_active=1
             """
@@ -104,11 +119,15 @@ def recompute_ranking(db: Database, settings: Settings | None = None) -> int:
     if not rows:
         return 0
 
-    elo_values = [float(row[2]) for row in rows if row[15]]
-    llm_values = [float(row[3]) for row in rows if row[16]]
+    elo_values = [float(row[2]) for row in rows if row[16]]
+    llm_values = [float(row[3]) for row in rows if row[17]]
     context_values = [int(row[9] or 0) for row in rows]
     latency_candidates = []
-    usage_ranks = [int(row[14]) for row in rows if row[14] is not None]
+    usage_ranks = [
+        rank
+        for row in rows
+        if (rank := _effective_provider_rank(row[14], row[15])) is not None
+    ]
     now_iso = utc_now_iso()
 
     for row in rows:
@@ -146,9 +165,9 @@ def recompute_ranking(db: Database, settings: Settings | None = None) -> int:
         cooldown_until = row[8]
         context_window = int(row[9] or 0)
         feature_count = int(row[10]) + int(row[11]) + int(row[12]) + int(row[13])
-        openrouter_rank = int(row[14]) if row[14] is not None else None
-        has_elo = bool(row[15])
-        has_llm = bool(row[16])
+        provider_rank = _effective_provider_rank(row[14], row[15])
+        has_elo = bool(row[16])
+        has_llm = bool(row[17])
         telemetry = telemetry_by_model.get(model_id, TelemetrySnapshot())
 
         benchmark_parts = []
@@ -169,7 +188,7 @@ def recompute_ranking(db: Database, settings: Settings | None = None) -> int:
                 ),
             )
         else:
-            usage_score = _cold_start_usage_score(openrouter_rank, max_rank)
+            usage_score = _cold_start_usage_score(provider_rank, max_rank)
 
         latency_reference = (
             telemetry.avg_ttfb_ms or telemetry.avg_latency_ms or base_ttfb_ms or base_latency_ms

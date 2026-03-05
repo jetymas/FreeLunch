@@ -56,6 +56,15 @@ python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
 python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
 ```
 
+Python 3.14 warning-hygiene baseline for contributors:
+
+- `fastapi==0.115.14`
+- `starlette==0.46.2`
+- `pytest==8.4.2`
+- `pytest-asyncio==0.26.0`
+
+Remaining upstream deprecation noise is filtered narrowly via `pyproject.toml` (`tool.pytest.ini_options.filterwarnings`) for known warnings emitted by `fastapi.routing` and `pytest_asyncio.plugin`; keep this list minimal and targeted.
+
 Focused validation is preferred while you iterate. Run the smallest meaningful test set first, then broaden only as needed.
 
 Examples:

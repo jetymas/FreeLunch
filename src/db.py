@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 DEFAULT_LOW_PRIORITY_LOG_QUEUE_SIZE = 5000
 HIGH_PRIORITY_QUEUE_RESERVE = 256
 
@@ -50,6 +50,7 @@ def _create_base_schema(conn: sqlite3.Connection) -> None:
             supports_system_messages INTEGER DEFAULT 1,
             chatbot_arena_elo REAL DEFAULT NULL,
             open_llm_score REAL DEFAULT NULL,
+            provider_rank INTEGER DEFAULT NULL,
             openrouter_rank INTEGER DEFAULT NULL,
             is_healthy INTEGER DEFAULT 1,
             last_health_check TEXT DEFAULT NULL,
@@ -202,12 +203,29 @@ def migrate_to_v5(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_to_v6(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "models",
+        "provider_rank",
+        "provider_rank INTEGER DEFAULT NULL",
+    )
+    conn.execute(
+        """
+        UPDATE models
+        SET provider_rank = openrouter_rank
+        WHERE provider_rank IS NULL AND openrouter_rank IS NOT NULL
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, migrate_to_v1),
     (2, migrate_to_v2),
     (3, migrate_to_v3),
     (4, migrate_to_v4),
     (5, migrate_to_v5),
+    (6, migrate_to_v6),
 ]
 
 

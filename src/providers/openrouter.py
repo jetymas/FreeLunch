@@ -10,9 +10,12 @@ import httpx
 from src.providers.base import (
     ChatResult,
     GatewayErrorCategory,
+    ProviderError,
     ProviderFatalError,
     ProviderRetryableError,
+    ProviderRuntimeState,
     StreamResult,
+    provider_error_from_error_payload,
 )
 
 
@@ -95,6 +98,30 @@ class OpenRouterAdapter:
         self.api_key = api_key
         self.api_base = api_base.rstrip("/")
         self.dev_stub_enabled = dev_stub_enabled
+
+    def runtime_state(self) -> ProviderRuntimeState:
+        runtime_available = bool(self.api_key) or self.dev_stub_enabled
+        return ProviderRuntimeState(
+            discovery_available=runtime_available,
+            inference_available=runtime_available,
+        )
+
+    def categorize_error(
+        self,
+        status_code: int | None,
+        error_code: str | None,
+        message: str,
+    ) -> tuple[GatewayErrorCategory, bool]:
+        return categorize_openrouter_error(status_code, error_code, message)
+
+    def error_from_payload(
+        self, payload: object, *, default_message: str = "provider stream error"
+    ) -> ProviderError | None:
+        return provider_error_from_error_payload(
+            payload,
+            categorize_error=self.categorize_error,
+            default_message=default_message,
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -385,7 +412,7 @@ class OpenRouterAdapter:
         error_code: str | None,
         message: str,
     ) -> tuple[GatewayErrorCategory, bool]:
-        return categorize_openrouter_error(status_code, error_code, message)
+        return self.categorize_error(status_code, error_code, message)
 
     async def _stub_stream(
         self, model: str, request_body: dict[str, Any]

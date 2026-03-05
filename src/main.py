@@ -23,28 +23,22 @@ from src.tokens import shutdown_tokenizer_preloads
 logger = get_logger(__name__)
 
 
-def _openrouter_dev_stub_enabled(settings: Settings) -> bool:
-    return settings.app_env == "dev" and settings.openrouter_dev_stub_enabled
-
-
-def _openrouter_runtime_enabled(settings: Settings) -> bool:
-    return settings.openrouter_inference_enabled and (
-        bool(settings.openrouter_api_key) or _openrouter_dev_stub_enabled(settings)
-    )
+def _sync_registry_runtime_gating(settings: Settings, registry: ProviderRegistry) -> None:
+    for registered in registry.all_registered():
+        configured_discovery_enabled = settings.is_provider_discovery_enabled(registered.name)
+        configured_inference_enabled = settings.is_provider_inference_enabled(registered.name)
+        runtime_state = registered.adapter.runtime_state()
+        registered.discovery_enabled = (
+            configured_discovery_enabled and runtime_state.discovery_available
+        )
+        registered.inference_enabled = (
+            configured_inference_enabled and runtime_state.inference_available
+        )
 
 
 def _configure_registry(settings: Settings, registry: ProviderRegistry) -> None:
-    dev_stub_enabled = _openrouter_dev_stub_enabled(settings)
-    discovery_enabled = settings.openrouter_discovery_enabled and (
-        bool(settings.openrouter_api_key) or dev_stub_enabled
-    )
-    registry.register_openrouter(
-        api_key=settings.openrouter_api_key,
-        api_base=settings.openrouter_api_base,
-        dev_stub_enabled=dev_stub_enabled,
-        discovery_enabled=discovery_enabled,
-        inference_enabled=_openrouter_runtime_enabled(settings),
-    )
+    registry.register_configured(settings)
+    _sync_registry_runtime_gating(settings, registry)
 
 
 def _configure_database_logging(settings: Settings, db: Database) -> None:
@@ -98,21 +92,64 @@ async def lifespan(app: FastAPI):
     app.state.discovery_lock = asyncio.Lock()
 
     def apply_provider_runtime_state(current_settings: Settings) -> None:
-        if not _openrouter_runtime_enabled(current_settings):
+        with db.read_conn() as conn:
+            active_provider_rows = conn.execute(
+                """
+                SELECT DISTINCT provider_id
+                FROM models
+                WHERE is_active=1
+                """
+            ).fetchall()
+
+        runtime_enabled_by_provider = {
+            registered.name: bool(registered.inference_enabled)
+            for registered in registry.all_registered()
+        }
+        provider_ids = set(runtime_enabled_by_provider.keys())
+        provider_ids.update(
+            str(row[0]) for row in active_provider_rows if row[0] is not None and str(row[0]).strip()
+        )
+        for provider_id in current_settings.known_provider_ids:
+            if current_settings.is_provider_inference_enabled(provider_id):
+                provider_ids.add(provider_id)
+
+        disabled_provider_ids: list[str] = []
+        for provider_id in sorted(provider_ids):
+            if runtime_enabled_by_provider.get(provider_id, False):
+                continue
+            disabled_provider_ids.append(provider_id)
             db.writer.enqueue(
-                "UPDATE models SET is_active=0 WHERE provider_id='openrouter'",
+                "UPDATE models SET is_active=0 WHERE provider_id=? AND is_active=1",
+                (provider_id,),
             )
+
+        if disabled_provider_ids:
             db.writer.flush()
-            runtime_log(
-                logger,
-                "provider.runtime_disabled",
-                verbosity="concise",
-                message="OpenRouter models deactivated because runtime inference is unavailable",
-                provider_id="openrouter",
-                inference_enabled=current_settings.openrouter_inference_enabled,
-                has_api_key=bool(current_settings.openrouter_api_key),
-                dev_stub_enabled=_openrouter_dev_stub_enabled(current_settings),
-            )
+            for provider_id in disabled_provider_ids:
+                registered = next(
+                    (
+                        item
+                        for item in registry.all_registered()
+                        if item.name == provider_id
+                    ),
+                    None,
+                )
+                runtime_state = registered.adapter.runtime_state() if registered else None
+                configured_inference_enabled = current_settings.is_provider_inference_enabled(
+                    provider_id
+                )
+                runtime_log(
+                    logger,
+                    "provider.runtime_disabled",
+                    verbosity="concise",
+                    message="Provider models deactivated because runtime inference is unavailable",
+                    provider_id=provider_id,
+                    configured_inference_enabled=configured_inference_enabled,
+                    registered=registered is not None,
+                    runtime_inference_available=runtime_state.inference_available
+                    if runtime_state is not None
+                    else False,
+                )
 
     def reload_settings() -> Settings:
         new_settings = Settings.from_env()

@@ -23,6 +23,7 @@ The spec is the target. The gap review is the current alignment snapshot. The ta
 - Keep timestamps canonical: UTC ISO 8601 with a `Z` suffix.
 - If behavior diverges from the spec, update `SPEC_GAP_REVIEW.md` and `TASKS.md` in the same change.
 - Treat `OPERATIONS.md` as the operator-facing source of truth for deployment, admin endpoints, logging interpretation, and live validation guidance.
+- Active mission: harden and maintain the now-landed multi-provider platformization baseline.
 
 ## Current Code Map
 
@@ -37,6 +38,15 @@ The spec is the target. The gap review is the current alignment snapshot. The ta
 - `src/proxy.py`: HTTP endpoints, auth, request handling, failover, streaming
 - `src/providers/base.py`: provider contracts and normalized error types
 - `src/providers/openrouter.py`: current provider implementation
+- `src/providers/openai_compatible.py`: shared OpenAI-compatible adapter behavior
+- `src/providers/openai.py`: OpenAI adapter module bootstrap
+- `src/providers/together.py`: Together adapter module bootstrap
+- `src/providers/groq.py`: Groq adapter module bootstrap
+- `src/providers/deepseek.py`: DeepSeek adapter module bootstrap
+- `src/providers/xai.py`: xAI adapter module bootstrap
+- `src/providers/cerebras.py`: Cerebras adapter module bootstrap
+- `src/providers/perplexity.py`: Perplexity adapter module bootstrap
+- `src/providers/nvidia.py`: Nvidia adapter module bootstrap
 - `src/providers/registry.py`: provider registration
 - `src/runtime_logging.py`: queue-backed JSON runtime logging with `concise` / `verbose` / `debug` gating
 
@@ -55,6 +65,7 @@ Notes:
 
 - Repo-wide Ruff is configured to ignore vendored local dependency folders such as `.pydeps`.
 - Coverage is informative today; the repo does not yet enforce the intended spec target automatically.
+- Python 3.14 test runs intentionally apply narrowly scoped third-party warning filters in `pyproject.toml` for known upstream asyncio deprecations in `fastapi.routing` and `pytest_asyncio.plugin`; do not broaden those filters without justification.
 
 ## Multi-Agent Orchestration
 
@@ -62,25 +73,28 @@ Use parallel agents only when file ownership is clearly separable. The main inte
 
 ### Recommended current split
 
-Phase 1: safe to run in parallel
+Current phase: provider hardening and maintenance after first-wave onboarding
 
-- Agent `token-observability`
-  Ownership: `src/proxy.py`, `src/db.py`, `src/tokens.py`, `tests/test_api.py`, `tests/test_db.py`
-  Current target: record context-failure and estimate-vs-usage evidence for tokenizer review without changing routing automatically
-- Agent `docs-installers`
-  Ownership: `README.md`, `CONTRIBUTING.md`, release/docs sections, installer-related workflow/docs
-  Current target: remaining docs polish and installer/release documentation consistency
+Phase A: safe to run in parallel
 
-Phase 2: run after Phase 1 lands or when those files are idle
+- Agent `provider-hardening-tests`
+  Ownership: `tests/test_app.py`, `tests/test_api.py`, provider adapter suites
+  Current target: startup/readiness/routing regressions for mixed provider enablement and runtime capability
+- Agent `benchmark-maintenance`
+  Ownership: `src/benchmarks.py`, `tests/test_benchmarks.py`
+  Current target: resilient parsing/fetch behavior as upstream Arena/Open LLM artifacts drift
+- Agent `docs-coordinator`
+  Ownership: `FREELUNCH_SPEC_v8.md`, `SPEC_GAP_REVIEW.md`, `TASKS.md`, `AGENTS.md`, relevant README/OPERATIONS sections
+  Current target: keep docs aligned with implemented provider platform and maintenance posture
 
-- Agent `token-review-summary`
-  Ownership: `src/health.py`, `src/proxy.py`, `tests/test_health.py`, `tests/test_app.py`, relevant admin-health docs
-  Current target: expose manual-review threshold summaries for token-estimation quality without changing tokenizer support automatically
-- Agent `provider-realism`
-  Ownership: `src/providers/openrouter.py`, `src/main.py`, `tests/test_openrouter.py`, `tests/test_app.py`, relevant README sections
-  Current target: explicit dev-mode gating for the no-key OpenRouter stub
+Phase B: run after Phase A lands or when those files are idle
 
-Do not run `token-observability` and `token-review-summary` concurrently if both need `src/proxy.py` or shared admin-health docs.
+- Agent `provider-live-smoke` (optional/manual)
+  Ownership: manual/integration scripts and docs only
+  Current target: gated non-CI smoke checks for provider modules with real API keys
+
+Do not run `provider-hardening-tests` concurrently with any worker editing `tests/test_app.py`.
+Do not run `benchmark-maintenance` concurrently with other workers editing `src/benchmarks.py`.
 
 ### Ownership rules
 
@@ -120,6 +134,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Do not let routing work and db-policy work edit `src/proxy.py` concurrently.
 - Do not let multiple agents update the same tracking doc in parallel.
 - Do not let installer/doc work silently redefine runtime behavior without handing off those changes to the coordinator for spec-gap review.
+- Do not run more than one worker against `src/main.py`, `src/config.py`, `src/db.py`, or `src/providers/base.py` in the same wave.
 
 ## Best Practices For Changes
 
@@ -128,6 +143,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - When touching startup/bootstrap code, verify both `/healthz` and `/readyz` behavior.
 - When touching provider error handling, test retryable vs non-retryable paths and streaming vs non-streaming behavior separately.
 - `tests/test_openrouter.py` now directly covers retry exhaustion, raw-body error fallback parsing, dev-stub chat/stream behavior, and stream transport failures; preserve that direct adapter coverage instead of relying only on indirect API tests.
+- `tests/test_openai_compatible.py` and `tests/test_app.py` now cover cross-provider bootstrap/runtime gating and OpenAI-compatible adapter error-contract invariants; extend those suites rather than duplicating one-off provider tests.
 - When touching config, update `config.yaml.example`, `README.md`, and any admin/config tests together.
 - When touching schema or persistence behavior, add a migration-safe test in `tests/test_db.py`.
 - Discovery currently deactivates provider models that disappear from later discovery runs; preserve that reconciliation behavior when modifying `src/discover.py`.
@@ -136,6 +152,7 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Benchmark refresh now respects per-source cache freshness and skips fetches when cached source data is still fresh; preserve that behavior if you touch `src/benchmarks.py`.
 - Chatbot Arena refresh now attempts the newest parseable `elo_results_*.pkl` snapshot first, then newer-to-older `leaderboard_table_*.csv` files, then `arena_hard_auto_leaderboard_*.csv`.
 - Open LLM refresh now needs to stay compatible with the current Hugging Face dataset-server row-page limit instead of assuming larger `rows` page sizes will be accepted.
+- Open LLM refresh also adapts dynamically when dataset-server lowers the accepted `rows.length` value and advances offsets by actual returned row count; preserve that behavior to avoid skipped rows.
 - App-heavy tests in `tests/conftest.py` and `tests/test_app.py` intentionally disable external leaderboard refresh and startup probes in their generated configs; preserve that isolation so CI runtime is not dominated by repeated network-bound startup work.
 - Request requirement parsing now lives partly in `src/tokens.py`; keep vision detection and token estimation there instead of growing ad hoc parsing logic inside `src/proxy.py`.
 - Routing now also re-checks context fit against each candidate's `tokenizer_family`; if you change request sizing, keep `src/tokens.py`, `src/proxy.py`, and `src/routing.py` aligned.
@@ -161,6 +178,12 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Runtime overrides are also refreshed by the scheduled `config_refresh` job, not just admin config endpoints.
 - `gateway.*` and `database.busy_timeout_ms` are now typed in `Settings`; if you change SQLite connection setup, keep `src/config.py`, `src/db.py`, and `tests/test_config.py` aligned.
 - Provider gating is now implemented in `Settings`/`ProviderRegistry`; keep `providers.enabled`, provider `enabled`, `discovery_enabled`, and `inference_enabled` semantics aligned across `src/config.py`, `src/main.py`, `src/providers/registry.py`, and `tests/test_app.py`.
+- Runtime probe controls are now provider-agnostic maps (`providers.<id>.active_probe_enabled` and `health.daily_request_budget_by_provider.<id>`). Preserve generic parsing/override behavior in `src/config.py` and `src/health.py`.
+- Provider onboarding is now module-driven; keep adding provider-specific logic inside `src/providers/*` instead of core orchestration paths.
+- Prefer shared OpenAI-compatible adapter abstractions for API-key providers over copy-paste adapter forks.
+- Keep OpenRouter behavior backward-compatible while platformization lands; treat regressions in current OpenRouter startup/discovery/routing behavior as P0 issues.
+- Stream error parsing in `src/proxy.py` is now provider-agnostic via provider categorization callbacks; do not reintroduce direct provider-specific imports into proxy orchestration.
+- Ranking/discovery now support neutral `provider_rank` with legacy `openrouter_rank` fallback/backfill; preserve migration compatibility until legacy cleanup is explicitly approved.
 - OpenRouter readiness now depends on runtime capability, not just persisted rows: if there is no real API key and explicit dev-stub mode is off, startup/reload should deactivate OpenRouter rows and keep the registry non-routable.
 - The no-key OpenRouter stub is now explicit dev-only behavior controlled by `providers.openrouter.dev_stub_enabled` and `APP_ENV=dev`; do not reintroduce implicit no-key stub activation.
 - `mark_success()` now maintains rolling latency/TTFB metrics with `ROLLING_METRIC_ALPHA` in `src/health.py`; preserve smoothing behavior unless you intentionally redesign ranking inputs.
@@ -169,6 +192,8 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Benchmark-name normalization now lives in `src/benchmarks.py`; reuse it for cache refresh and discovery joins instead of reintroducing duplicate normalization logic.
 - Installer assets now live at repo root (`install.sh`, `uninstall.sh`, `install.ps1`, `uninstall.ps1`) and CI smoke-tests them with env-driven non-interactive inputs against a fake Docker shim; keep those env override paths working when changing installer prompts.
 - The Docker image smoke test intentionally sets `APP_ENV=dev` plus `OPENROUTER_DEV_STUB_ENABLED=true` so `/healthz` can validate app bootstrap without real provider credentials; do not silently change that CI assumption without updating the workflow and docs together.
+- Manual provider validation now uses `scripts/provider_smoke.py`; keep it non-CI, budget-aware, and independent from app startup behavior.
+- Dependency warning hygiene is now tied to upgraded baselines in `requirements.txt`/`requirements-dev.txt`; when changing those pins, re-check Python 3.14 warning behavior before adjusting filters.
 
 ## Common Pitfalls
 
@@ -186,5 +211,6 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 - Dev workflow: `CONTRIBUTING.md`
 - Runtime defaults: `config.yaml.example`, `.env.example`
 - Operator runbook: `OPERATIONS.md`
+- Manual live-provider smoke harness: `scripts/provider_smoke.py`
 - Behavior examples: `tests/test_api.py`, `tests/test_app.py`, `tests/test_health.py`, `tests/test_routing.py`
 - Provider-boundary examples: `tests/test_openrouter.py`

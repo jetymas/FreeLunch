@@ -25,6 +25,11 @@ ignore = ["E501", "UP017"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore:'asyncio.iscoroutinefunction' is deprecated.*:DeprecationWarning:fastapi\\.routing",
+    "ignore:'asyncio.get_event_loop_policy' is deprecated.*:DeprecationWarning:pytest_asyncio\\.plugin",
+    "ignore:'asyncio.set_event_loop_policy' is deprecated.*:DeprecationWarning:pytest_asyncio\\.plugin",
+]
 
 [tool.coverage.report]
 fail_under = 80

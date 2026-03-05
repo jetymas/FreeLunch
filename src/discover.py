@@ -10,6 +10,30 @@ from src.tokens import schedule_tokenizer_preload
 logger = get_logger(__name__)
 
 
+def _coerce_rank(value: object) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int | float | str):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_rank_metadata(model: dict) -> tuple[int | None, int | None]:
+    provider_rank = _coerce_rank(model.get("provider_rank"))
+    openrouter_rank = _coerce_rank(model.get("openrouter_rank"))
+
+    if provider_rank is None:
+        provider_rank = openrouter_rank
+    if openrouter_rank is None and str(model.get("provider_id", "")) == "openrouter":
+        openrouter_rank = provider_rank
+
+    return provider_rank, openrouter_rank
+
+
 def _benchmark_lookup_keys(model: dict) -> list[str]:
     raw_values = [
         str(model.get("provider_model_id", "")),
@@ -86,6 +110,7 @@ async def run_discovery(
         seen_ids: list[str] = []
         for model in models:
             model = _apply_cached_benchmarks(db, model)
+            provider_rank, openrouter_rank = _resolve_rank_metadata(model)
             schedule_tokenizer_preload(str(model.get("provider_model_id", "")))
             seen_ids.append(str(model["id"]))
             db.writer.enqueue(
@@ -94,9 +119,10 @@ async def run_discovery(
                   id, name, provider_id, provider_model_id, provider_base_url, provider_api_key_env,
                   endpoint_id, provider_options_json,
                   context_window, max_output_tokens, supports_tools, supports_streaming, supports_vision,
-                  supports_structured_output, supports_system_messages, tokenizer_family, openrouter_rank, chatbot_arena_elo,
-                  open_llm_score, is_healthy, discovered_at, last_seen_at, score_updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  supports_structured_output, supports_system_messages, tokenizer_family, provider_rank,
+                  openrouter_rank, chatbot_arena_elo, open_llm_score, is_healthy, discovered_at, last_seen_at,
+                  score_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   name=excluded.name,
                   provider_id=excluded.provider_id,
@@ -116,6 +142,7 @@ async def run_discovery(
                   context_window=excluded.context_window,
                   max_output_tokens=excluded.max_output_tokens,
                   tokenizer_family=excluded.tokenizer_family,
+                  provider_rank=excluded.provider_rank,
                   openrouter_rank=excluded.openrouter_rank,
                   chatbot_arena_elo=excluded.chatbot_arena_elo,
                   open_llm_score=excluded.open_llm_score
@@ -137,7 +164,8 @@ async def run_discovery(
                     model.get("supports_structured_output", 0),
                     model.get("supports_system_messages", 1),
                     model.get("tokenizer_family"),
-                    model.get("openrouter_rank"),
+                    provider_rank,
+                    openrouter_rank,
                     model.get("chatbot_arena_elo"),
                     model.get("open_llm_score"),
                     model.get("is_healthy", 1),

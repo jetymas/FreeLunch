@@ -6,8 +6,15 @@ from typing import Any
 import httpx
 import pytest
 
-from src.providers.base import ProviderFatalError, ProviderRetryableError
+from src.providers.base import (
+    ChatResult,
+    ProviderFatalError,
+    ProviderRetryableError,
+    ProviderRuntimeState,
+    StreamResult,
+)
 from src.providers.openrouter import OpenRouterAdapter, categorize_openrouter_error
+from src.providers.registry import ProviderRegistry
 from src.proxy import _provider_error_from_event
 
 
@@ -91,6 +98,89 @@ class _StreamingClient:
 
     async def aclose(self):
         self.closed = True
+
+
+class _DummyProviderAdapter:
+    name = "dummy"
+
+    def runtime_state(self) -> ProviderRuntimeState:
+        return ProviderRuntimeState(discovery_available=True, inference_available=True)
+
+    def categorize_error(self, status_code, error_code, message):
+        return "INVALID_REQUEST", False
+
+    async def discover_models(self):
+        return []
+
+    async def chat_completions(self, request_body, model):
+        return ChatResult(payload={"id": "dummy", "model": model, "request": request_body})
+
+    async def stream_chat_completions(self, request_body, model):
+        async def gen():
+            yield b"data: [DONE]\n\n"
+
+        return StreamResult(events=gen())
+
+    async def probe(self, model, *, max_tokens=1, timeout_seconds=15):
+        return ChatResult(payload={"id": "dummy-probe", "model": model})
+
+
+def test_openrouter_runtime_state_reflects_api_key_or_dev_stub():
+    assert OpenRouterAdapter(api_key="", dev_stub_enabled=False).runtime_state() == ProviderRuntimeState(
+        discovery_available=False,
+        inference_available=False,
+    )
+    assert OpenRouterAdapter(api_key="test-key", dev_stub_enabled=False).runtime_state() == (
+        ProviderRuntimeState(
+            discovery_available=True,
+            inference_available=True,
+        )
+    )
+    assert OpenRouterAdapter(api_key="", dev_stub_enabled=True).runtime_state() == ProviderRuntimeState(
+        discovery_available=True,
+        inference_available=True,
+    )
+
+
+def test_openrouter_error_from_payload_uses_provider_classifier():
+    adapter = OpenRouterAdapter(api_key="test-key")
+    retryable = adapter.error_from_payload(
+        {"error": {"message": "rate limit exceeded", "code": "rate_limit_exceeded"}}
+    )
+    assert isinstance(retryable, ProviderRetryableError)
+    assert retryable.category == "RATE_LIMITED"
+
+    fatal = adapter.error_from_payload({"error": {"message": "invalid api key", "code": "401"}})
+    assert isinstance(fatal, ProviderFatalError)
+    assert fatal.category == "AUTH_ERROR"
+
+    assert adapter.error_from_payload({"choices": []}) is None
+
+
+def test_registry_supports_generic_provider_registration():
+    registry = ProviderRegistry()
+    adapter = _DummyProviderAdapter()
+
+    registry.register(adapter, discovery_enabled=True, inference_enabled=False)
+
+    assert registry.all() == [adapter]
+    with pytest.raises(KeyError):
+        registry.get("dummy")
+
+    registered = registry.get_registered("dummy")
+    assert registered.name == "dummy"
+    assert registered.discovery_enabled is True
+    assert registered.inference_enabled is False
+
+
+def test_registry_categorize_error_delegates_to_provider_contract():
+    registry = ProviderRegistry()
+    registry.register(_DummyProviderAdapter())
+
+    category, retryable = registry.categorize_error("dummy", None, "bad_request", "bad request")
+
+    assert category == "INVALID_REQUEST"
+    assert retryable is False
 
 
 @pytest.mark.asyncio
@@ -318,14 +408,18 @@ def test_categorize_openrouter_error_maps_common_string_codes_without_status():
 
 
 def test_provider_error_from_event_uses_error_code_when_status_code_is_absent():
+    adapter = OpenRouterAdapter(api_key="test-key")
+
     rate_limit_error = _provider_error_from_event(
-        {"error": {"message": "rate limit exceeded", "code": "rate_limit_exceeded"}}
+        {"error": {"message": "rate limit exceeded", "code": "rate_limit_exceeded"}},
+        categorize_error=adapter.categorize_error,
     )
     assert isinstance(rate_limit_error, ProviderRetryableError)
     assert rate_limit_error.category == "RATE_LIMITED"
 
     auth_error = _provider_error_from_event(
-        {"error": {"message": "invalid api key", "code": "401"}}
+        {"error": {"message": "invalid api key", "code": "401"}},
+        categorize_error=adapter.categorize_error,
     )
     assert auth_error is not None
     assert auth_error.category == "AUTH_ERROR"
