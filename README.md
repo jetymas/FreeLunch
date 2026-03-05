@@ -32,7 +32,10 @@ Model/provider availability changes constantly. FreeLunch gives clients one stab
 
 ## Quick Start
 
-1. Prerequisites: Docker + Compose (recommended), and at least one provider key.
+1. Prerequisites:
+   - Docker + Compose v2 must already be installed and running.
+   - At least one provider key (OpenRouter key for the default setup).
+   - The installer validates Docker; it does not install Docker for you.
 2. Install (pick one):
 
 Linux / macOS
@@ -47,7 +50,20 @@ Windows PowerShell
 irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex
 ```
 
-3. Verify service:
+3. Set API keys:
+   - Installer flow: keys are stored in `~/.freelunch/.env` (Windows: `%USERPROFILE%\\.freelunch\\.env`).
+   - Repo/docker-compose flow: copy `.env.example` to `.env` and set keys there.
+   - Required for default provider: `OPENROUTER_API_KEY`.
+   - Optional gateway auth key: `GATEWAY_API_KEY` (clients then send `Authorization: Bearer <key>`).
+
+Example `.env` values:
+
+```dotenv
+OPENROUTER_API_KEY=sk-or-v1-...
+GATEWAY_API_KEY=
+```
+
+4. Verify service:
 
 ```bash
 curl http://localhost:8000/healthz
@@ -55,7 +71,7 @@ curl http://localhost:8000/readyz
 curl http://localhost:8000/v1/models
 ```
 
-4. Send a request:
+5. Send a request:
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -75,6 +91,16 @@ resp = client.chat.completions.create(
 )
 print(resp.choices[0].message.content)
 ```
+
+### Use With Other Clients
+
+Most OpenAI-compatible clients only need a base URL and model name.
+
+- Base URL: `http://localhost:8000/v1`
+- Model: `auto` (recommended default)
+- API key: many clients require a value; if so, use any placeholder unless your deployment enforces gateway auth
+
+If `GATEWAY_API_KEY` is set, send `Authorization: Bearer <your-key>` with requests.
 
 ## How It Works
 
@@ -97,6 +123,8 @@ flowchart LR
     A -->|retryable error| F["Bounded failover"]
     F --> A
 ```
+
+All of this typically adds only a few milliseconds of gateway overhead per request.
 
 ## Project Model
 
@@ -193,30 +221,14 @@ classDiagram
 - `TASKS.md`: active backlog
 - `AGENTS.md`: agent execution guidance
 
-## Use With Other Clients
-
-Most OpenAI-compatible clients only need a base URL and model name.
-
-- Base URL: `http://localhost:8000/v1`
-- Model: `auto` (recommended default)
-- API key: many clients require a value; if so, use any placeholder unless your deployment enforces gateway auth
-
-If a client supports custom OpenAI endpoints, point it at FreeLunch and keep the rest of the workflow the same.
-
 ## Logs And Important Options
 
-For less technical operators, these are the most useful controls:
+Use these controls to inspect runtime behavior and tune the gateway:
 
-- Runtime logs:
-  - enabled by default
-  - set verbosity with `logging.runtime_verbosity: concise | verbose | debug`
-  - view in terminal/container logs
-- Request history:
-  - `GET /admin/logs`
-- Overall system health:
-  - `GET /admin/health`
-- Effective runtime config:
-  - `GET /admin/config`
+- Runtime logs are enabled by default and written to process/container output.
+- Set verbosity in `config.yaml` under `logging.runtime_verbosity: concise | verbose | debug`.
+- For installer deployments, edit `~/.freelunch/config.yaml` and restart the container.
+- You can also change allowed keys live with `PUT /admin/config/{key}` (stored as overrides in SQLite).
 
 Common options worth knowing:
 
@@ -225,6 +237,17 @@ Common options worth knowing:
 - `providers.<id>.inference_enabled`
 - `routing.max_attempts`
 - `logging.runtime_verbosity`
+
+Quick admin requests:
+
+```bash
+# If gateway auth is enabled, include:
+# -H "Authorization: Bearer <gateway_api_key>"
+
+curl http://localhost:8000/admin/health
+curl http://localhost:8000/admin/config
+curl "http://localhost:8000/admin/logs?limit=50"
+```
 
 ## Quick Structure Snapshot
 
