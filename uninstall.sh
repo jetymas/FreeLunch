@@ -24,4 +24,4 @@ rm -rf "${INSTALL_DIR}"
 
 printf 'FreeLunch has been uninstalled.\n'
 printf 'The Docker image is still cached locally. To remove it:\n'
-printf '  docker rmi ghcr.io/jetymas/FreeLunch:latest\n'
+printf '  docker rmi ghcr.io/jetymas/freelunch:latest\n'

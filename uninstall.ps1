@@ -26,4 +26,4 @@ if (Test-Path $InstallDir) {
 
 Write-Host "FreeLunch has been uninstalled."
 Write-Host "The Docker image is still cached locally. To remove it:"
-Write-Host "  docker rmi ghcr.io/jetymas/FreeLunch:latest"
+Write-Host "  docker rmi ghcr.io/jetymas/freelunch:latest"

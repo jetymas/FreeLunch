@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${FREELUNCH_REPO:-jetymas/FreeLunch}"
-IMAGE="${FREELUNCH_IMAGE:-ghcr.io/${REPO}:latest}"
+REPO="${FREELUNCH_REPO:-jetymas/freelunch}"
+REPO_LOWER="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+IMAGE="${FREELUNCH_IMAGE:-ghcr.io/${REPO_LOWER}:latest}"
 INSTALL_DIR="${FREELUNCH_INSTALL_DIR:-${HOME}/.freelunch}"
 DEFAULT_PORT="${FREELUNCH_PORT:-8000}"
 
@@ -159,7 +160,7 @@ write_compose_file() {
     cat > "${INSTALL_DIR}/docker-compose.yml" <<'EOF'
 services:
   freelunch:
-    image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/FreeLunch:latest}
+    image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
     restart: unless-stopped
     ports:
       - "${FREELUNCH_PORT:-8000}:8000"

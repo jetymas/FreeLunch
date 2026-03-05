@@ -405,7 +405,7 @@ The installers:
 - create a Docker-based deployment under `~/.freelunch`
 - prompt for or consume `OPENROUTER_API_KEY`
 - write `.env` and runtime config
-- pull `ghcr.io/jetymas/FreeLunch:latest`
+- pull `ghcr.io/jetymas/freelunch:latest`
 - start the gateway
 
 Supported unattended inputs include:

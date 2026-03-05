@@ -2,7 +2,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Repo = if ($env:FREELUNCH_REPO) { $env:FREELUNCH_REPO } else { "jetymas/FreeLunch" }
+$Repo = if ($env:FREELUNCH_REPO) { $env:FREELUNCH_REPO } else { "jetymas/freelunch" }
+$Repo = $Repo.ToLowerInvariant()
 $Image = if ($env:FREELUNCH_IMAGE) { $env:FREELUNCH_IMAGE } else { "ghcr.io/$Repo`:latest" }
 $InstallDir = if ($env:FREELUNCH_INSTALL_DIR) { $env:FREELUNCH_INSTALL_DIR } else { Join-Path $env:USERPROFILE ".freelunch" }
 $DefaultPort = if ($env:FREELUNCH_PORT) { $env:FREELUNCH_PORT } else { "8000" }
@@ -151,7 +152,7 @@ function Write-ComposeFile {
     @'
 services:
   freelunch:
-    image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/FreeLunch:latest}
+    image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
     restart: unless-stopped
     ports:
       - "${FREELUNCH_PORT:-8000}:8000"
@@ -166,8 +167,14 @@ services:
 function Start-FreeLunch {
     Write-Info "Pulling $Image"
     docker pull $Image
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Failed to pull image: $Image"
+    }
     Write-Info "Starting FreeLunch"
     docker compose --project-directory $InstallDir -f (Join-Path $InstallDir "docker-compose.yml") up -d
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Failed to start FreeLunch via docker compose."
+    }
 }
 
 function Print-Summary {
