@@ -214,6 +214,8 @@ def test_admin_endpoints(client):
     config_payload = config_response.json()
     assert "overrides" in config_payload
     assert "effective" in config_payload
+    assert "effective_values" in config_payload
+    assert "overridable_keys" in config_payload
     assert "logging.runtime_verbosity" in config_payload["effective"]
 
     secrets_response = client.get("/admin/secrets")
@@ -466,6 +468,29 @@ def test_admin_enable_disable_model_impacts_readiness(client):
     assert ready_after_enable.status_code == 200
 
 
+def test_admin_models_include_ranking_and_runtime_metadata(client):
+    response = client.get("/admin/models")
+    assert response.status_code == 200
+    model = response.json()["models"][0]
+    assert "name" in model
+    assert "provider_rank" in model
+    assert "avg_latency_ms" in model
+    assert "avg_ttfb_ms" in model
+    assert "tokenizer_family" in model
+
+
+def test_admin_config_exposes_groupable_effective_values(client):
+    response = client.get("/admin/config")
+    assert response.status_code == 200
+    payload = response.json()
+    first_entry = payload["effective_values"][0]
+    assert {"key", "value", "type", "overridable", "section"} <= set(first_entry)
+    assert "logging.runtime_verbosity" in payload["overridable_keys"]
+    assert {"mode", "enabled", "source", "env_configured", "updated_at"} <= set(
+        payload["gateway_auth"]
+    )
+
+
 def test_admin_model_endpoints_return_404_for_unknown_model(client):
     detail_response = client.get("/admin/models/openrouter/does-not-exist")
     assert detail_response.status_code == 404
@@ -520,6 +545,34 @@ def test_admin_logs_returns_recent_entries(client):
     assert payload["count"] >= 1
     assert payload["limit"] == 5
     assert payload["logs"][0]["request_id"]
+    assert "request_source" in payload["logs"][0]
+    assert "selected_provider_model_id" in payload["logs"][0]
+    assert "estimated_prompt_tokens" in payload["logs"][0]
+
+
+def test_admin_logs_support_provider_and_source_filters(client):
+    db = client.app.state.db
+    now = utc_now_iso()
+    db.writer.enqueue(
+        """
+        INSERT INTO request_log(
+            request_id, timestamp, request_source, selected_model_id, provider_id, success
+        ) VALUES
+            ('provider-filter-1', ?, 'client', 'openrouter/openrouter/free', 'openrouter', 1),
+            ('provider-filter-2', ?, 'probe', 'openrouter/openrouter/free', 'openrouter', 1)
+        """,
+        (now, now),
+    )
+    db.writer.flush()
+
+    response = client.get("/admin/logs?limit=20&provider_id=openrouter&request_source=probe")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filters"]["provider_id"] == "openrouter"
+    assert payload["filters"]["request_source"] == "probe"
+    assert payload["logs"]
+    assert all(entry["provider_id"] == "openrouter" for entry in payload["logs"])
+    assert all(entry["request_source"] == "probe" for entry in payload["logs"])
 
 
 def test_admin_logs_success_only_filter_returns_expected_rows(client, monkeypatch):
@@ -646,17 +699,113 @@ def test_admin_config_override_reschedules_ranking_job(client):
     assert int(job.trigger.interval.total_seconds()) == 1200
 
 
-def test_admin_endpoints_require_auth_when_gateway_key_is_set(client):
-    client.app.state.settings.gateway_api_key = "secret"
+def test_admin_can_set_and_use_managed_gateway_auth_key(client):
+    update_response = client.put("/admin/gateway-auth", json={"key": "managed-token"})
+    assert update_response.status_code == 200
+
+    auth_payload = update_response.json()
+    assert auth_payload["mode"] == "enabled"
+    assert auth_payload["enabled"] is True
+    assert auth_payload["source"] == "managed"
 
     unauthorized = client.get("/admin/models")
     assert unauthorized.status_code == 401
 
-    authorized = client.get("/admin/models", headers={"Authorization": "Bearer secret"})
+    old_placeholder = client.get("/admin/models", headers={"Authorization": "Bearer placeholder"})
+    assert old_placeholder.status_code == 401
+
+    authorized = client.get("/admin/models", headers={"Authorization": "Bearer managed-token"})
     assert authorized.status_code == 200
 
-    ready = client.get("/readyz")
-    assert ready.status_code == 200
+    public_models = client.get("/v1/models", headers={"Authorization": "Bearer managed-token"})
+    assert public_models.status_code == 200
+
+
+def test_admin_can_disable_gateway_auth_even_when_env_key_exists(tmp_path, monkeypatch):
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - openrouter
+  openrouter:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    dev_stub_enabled: true
+""",
+    ) as client:
+        monkeypatch.setenv("GATEWAY_API_KEY", "env-token")
+        client.app.state.reload_settings()
+
+        unauthorized = client.get("/admin/models")
+        assert unauthorized.status_code == 401
+
+        disable_response = client.delete(
+            "/admin/gateway-auth",
+            headers={"Authorization": "Bearer env-token"},
+        )
+        assert disable_response.status_code == 200
+        assert disable_response.json()["mode"] == "disabled"
+        assert disable_response.json()["enabled"] is False
+
+        after_disable = client.get("/admin/models")
+        assert after_disable.status_code == 200
+
+        public_models = client.get("/v1/models")
+        assert public_models.status_code == 200
+
+
+def test_admin_can_revert_gateway_auth_to_environment_inheritance(tmp_path, monkeypatch):
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - openrouter
+  openrouter:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    dev_stub_enabled: true
+""",
+    ) as client:
+        monkeypatch.setenv("GATEWAY_API_KEY", "env-token")
+        client.app.state.reload_settings()
+
+        update_response = client.put(
+            "/admin/gateway-auth",
+            json={"key": "managed-token"},
+            headers={"Authorization": "Bearer env-token"},
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["source"] == "managed"
+
+        env_after_managed = client.get(
+            "/admin/models", headers={"Authorization": "Bearer env-token"}
+        )
+        assert env_after_managed.status_code == 401
+
+        inherit_response = client.post(
+            "/admin/gateway-auth/inherit",
+            headers={"Authorization": "Bearer managed-token"},
+        )
+        assert inherit_response.status_code == 200
+        inherit_payload = inherit_response.json()
+        assert inherit_payload["mode"] == "inherit"
+        assert inherit_payload["enabled"] is True
+        assert inherit_payload["source"] == "env"
+
+        env_authorized = client.get("/admin/models", headers={"Authorization": "Bearer env-token"})
+        assert env_authorized.status_code == 200
+
+        managed_after_inherit = client.get(
+            "/admin/models",
+            headers={"Authorization": "Bearer managed-token"},
+        )
+        assert managed_after_inherit.status_code == 401
 
 
 def test_admin_config_rejects_unknown_override_key(client):

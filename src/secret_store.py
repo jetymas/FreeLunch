@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -33,6 +35,12 @@ class SecretStorePasswordError(SecretStoreError):
 class SecretVaultConfig:
     salt_b64: str
     verifier_encrypted: str
+
+
+@dataclass(slots=True, frozen=True)
+class GatewayAuthConfig:
+    token_salt_b64: str
+    token_hash_b64: str
 
 
 def _derive_fernet(password: str, salt_b64: str) -> Fernet:
@@ -74,6 +82,38 @@ def unlock_vault(password: str, config: SecretVaultConfig) -> ManagedSecretStore
     if verifier != _VERIFIER_PLAINTEXT:
         raise SecretStorePasswordError("invalid vault password")
     return store
+
+
+def create_gateway_auth_config(token: str) -> GatewayAuthConfig:
+    cleaned = token.strip()
+    if not cleaned:
+        raise ValueError("gateway auth key cannot be empty")
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        cleaned.encode("utf-8"),
+        salt,
+        _PBKDF2_ITERATIONS,
+    )
+    return GatewayAuthConfig(
+        token_salt_b64=base64.urlsafe_b64encode(salt).decode("ascii"),
+        token_hash_b64=base64.urlsafe_b64encode(digest).decode("ascii"),
+    )
+
+
+def verify_gateway_auth_token(token: str, config: GatewayAuthConfig) -> bool:
+    cleaned = token.strip()
+    if not cleaned:
+        return False
+    salt = base64.urlsafe_b64decode(config.token_salt_b64.encode("ascii"))
+    expected = base64.urlsafe_b64decode(config.token_hash_b64.encode("ascii"))
+    candidate = hashlib.pbkdf2_hmac(
+        "sha256",
+        cleaned.encode("utf-8"),
+        salt,
+        _PBKDF2_ITERATIONS,
+    )
+    return hmac.compare_digest(candidate, expected)
 
 
 class ManagedSecretStore:

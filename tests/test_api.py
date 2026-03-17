@@ -150,7 +150,15 @@ def test_chat_completions_returns_auth_error_without_failover(client, monkeypatc
 
 
 def test_v1_endpoints_reject_invalid_bearer_token(client, monkeypatch):
-    client.app.state.settings.gateway_api_key = "secret"
+    client.app.state.gateway_auth = {
+        "mode": "inherit",
+        "enabled": True,
+        "source": "env",
+        "env_configured": True,
+        "updated_at": None,
+        "config": None,
+        "env_key": "secret",
+    }
     called = {"chat": 0}
 
     async def fake_chat(self, request_body, model):

@@ -153,15 +153,34 @@ Key sections:
 
 ### 6.3 `/admin/config`
 
-Use to inspect effective config and DB-backed overrides.
+Use to inspect effective config, DB-backed overrides, and the current effective gateway-auth mode.
 
-### 6.4 `/admin/logs`
+### 6.4 `/admin/gateway-auth`
+
+Use to inspect or change gateway bearer-auth behavior without editing `.env`.
+
+Modes:
+
+- `inherit`
+  - use `GATEWAY_API_KEY` from the environment if present
+- `enabled`
+  - require the managed bearer token stored as a salted hash in SQLite
+- `disabled`
+  - accept unauthenticated requests
+
+Operational notes:
+
+- changing the managed key takes effect immediately after the API call returns
+- the raw managed token is never returned by admin APIs
+- if you disable gateway auth, all admin and client endpoints become unauthenticated until you re-enable or inherit a key
+
+### 6.5 `/admin/logs`
 
 Use for durable request telemetry review.
 
 This endpoint reflects `request_log`, not the process runtime logger.
 
-### 6.5 `/admin/secrets`
+### 6.6 `/admin/secrets`
 
 Use to inspect and manage encrypted provider secrets stored in SQLite.
 
@@ -170,9 +189,9 @@ Operational notes:
 - configure the vault first with `POST /admin/secrets/vault/setup` or the Admin UI, then unlock it with the runtime password when needed
 - responses never return raw secret values
 - secret updates trigger runtime reload so provider bootstrap picks up the new value immediately
-- if `GATEWAY_API_KEY` is unset, admin endpoints (including secrets) remain unauthenticated; do not expose that configuration outside a trusted local environment
+- if effective gateway auth is disabled, admin endpoints (including secrets) remain unauthenticated; do not expose that configuration outside a trusted local environment
 
-### 6.6 `/admin/ui`
+### 6.7 `/admin/ui`
 
 Use for a lightweight operator console over the existing admin APIs.
 
@@ -180,7 +199,13 @@ Notes:
 
 - the page is static HTML/CSS/JS served by the app
 - it prompts for the bearer token client-side and sends it with `fetch`
-- it includes a dark-mode vault workflow for creating/unlocking the runtime password vault plus host-side uninstall guidance
+- it is organized into dedicated pages for `Health`, `Vault`, `Models`, `Settings`, and `Logs`
+- `Health` is the default landing page unless the operator changes it in `Settings`
+- `Health` is the right place to review readiness, routable providers, probe budgets, scheduler state, token-estimation review flags, and recent model errors
+- `Vault` is the right place to create/unlock/lock the runtime vault and manage provider secret slots
+- `Models` is the right place to inspect ranking results, model capability metadata, and activation state
+- `Settings` now shows every public effective setting grouped by section, active runtime overrides, gateway-auth controls, the preferred default landing page selector, and host-side uninstall guidance
+- `Logs` is the right place to inspect durable request telemetry with outcome/provider/source/model filters
 - it is suitable for single-node/local-first operations, not a multi-user admin portal
 
 ## 7. Logging Model

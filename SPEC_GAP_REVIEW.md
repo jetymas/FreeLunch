@@ -18,7 +18,8 @@ Quality target update (March 2026): repository policy targets **97%+** line cove
 - Core schema coverage for `models`, `request_log`, `leaderboard_cache`, and `config_overrides`.
 - Provider registry plus an OpenRouter adapter for discovery, chat completions, streaming, probing, and normalized error mapping.
 - Core API surface implemented: `/healthz`, `/readyz`, `/v1/models`, `/v1/chat/completions`.
-- Admin API surface implemented: `/admin/ui`, `/admin/models`, `/admin/models/{id}`, enable/disable endpoints, `/admin/health`, `/admin/secrets`, `/admin/secrets/vault/*`, `/admin/uninstall`, `/admin/config`, `/admin/refresh`, and `/admin/logs`.
+- Admin API surface implemented: `/admin/ui`, `/admin/models`, `/admin/models/{id}`, enable/disable endpoints, `/admin/health`, `/admin/secrets`, `/admin/secrets/vault/*`, `/admin/uninstall`, `/admin/config`, `/admin/gateway-auth`, `/admin/refresh`, and `/admin/logs`.
+- The admin UI is now a multi-page dark-mode console with dedicated `Health`, `Vault`, `Models`, `Settings`, and `Logs` sections, plus a client-side default landing-page preference and gateway-auth controls in `Settings`.
 - Bounded multi-candidate routing with capability filters, fallback insertion, request-preference headers, and retryable failover.
 - Streaming relay hardening for pre-first-byte failover, keepalive suppression, TTFB capture, and terminal `[DONE]` handling.
 - Health and ranking loops that use passive request telemetry plus conservative active probes, exponential cooldown backoff, and composite scoring.
@@ -90,6 +91,7 @@ Residual work:
 - Runtime overrides are now applied at startup, on admin mutation, and via a periodic config-refresh job.
 - The DB writer queue is now bounded, low-priority client logs are explicitly lossy, and reserved queue capacity plus blocking backpressure protect higher-priority metadata writes.
 - Managed provider secrets are now stored in a dedicated encrypted SQLite table behind a runtime password vault, re-applied during unlock/runtime reload, and surfaced only as masked metadata through `/admin/secrets` and `/admin/health`.
+- Gateway bearer auth can now be managed separately from the provider vault: operators can keep inheriting `GATEWAY_API_KEY`, disable auth explicitly, or switch to a managed bearer token whose salted hash is stored in SQLite and administered through `/admin/gateway-auth` / `Settings`.
 
 ### 5) Provider realism is accepted for current shipped scope, with one explicit dev-only escape hatch (intentional boundary)
 

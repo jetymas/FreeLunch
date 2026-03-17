@@ -55,7 +55,7 @@ irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex
    - Installer flow: keys are stored in `~/.freelunch/.env` (Windows: `%USERPROFILE%\\.freelunch\\.env`).
    - Repo/docker-compose flow: copy `.env.example` to `.env` and set keys there.
    - Required for installer/default provider bootstrap: `OPENROUTER_API_KEY`.
-   - Optional gateway auth key: `GATEWAY_API_KEY` (clients then send `Authorization: Bearer <key>`).
+   - Optional gateway auth key: `GATEWAY_API_KEY` (the gateway can also inherit, override, or disable this later from `Settings` in `/admin/ui`).
    - Optional managed provider secrets: open `http://localhost:8000/admin/ui`, create a vault password, then save provider keys through the UI or `/admin/secrets`.
    - Installer flow also prints the Admin UI URL and can create a desktop shortcut for it.
 
@@ -103,13 +103,14 @@ Most OpenAI-compatible clients only need a base URL and model name.
 - Model: `auto` (recommended default)
 - API key: many clients require a value; if so, use any placeholder unless your deployment enforces gateway auth
 
-If `GATEWAY_API_KEY` is set, send `Authorization: Bearer <your-key>` with requests.
+If gateway auth is enabled, send `Authorization: Bearer <your-key>` with requests. The effective key can come from `Settings` in `/admin/ui` or by inheriting `GATEWAY_API_KEY`.
 
 ## Security Notes
 
 - Keep real provider keys only in local `.env` files or your deployment secret store; do not commit populated secrets.
 - Managed provider secrets are encrypted in SQLite and unlocked at runtime with a local vault password. The vault stays unlocked only for the running process.
-- Gateway auth is not part of the managed vault. If you want bearer auth, keep using `GATEWAY_API_KEY`.
+- Gateway auth is not part of the provider vault. It can either inherit `GATEWAY_API_KEY`, be disabled explicitly, or use a managed bearer token configured from `Settings`.
+- Managed gateway-auth tokens are stored as a salted hash in SQLite; admin APIs never return the raw token.
 - Rotate all provider and gateway keys before/at public release, then restart the gateway so runtime picks up rotated credentials.
 - Treat leaked keys as compromised even if exposure was brief, and replace them immediately.
 
@@ -944,6 +945,22 @@ This forces an immediate discovery/ranking pass through the same discovery runne
 
 This is sourced from durable SQLite telemetry, not the runtime log queue.
 
+### Gateway auth
+
+- `GET /admin/gateway-auth`
+- `PUT /admin/gateway-auth`
+- `DELETE /admin/gateway-auth`
+- `POST /admin/gateway-auth/inherit`
+
+Gateway auth has three operator-controlled modes:
+
+- `inherit`
+  - use `GATEWAY_API_KEY` from the environment if it is set
+- `enabled`
+  - use a managed bearer token configured from `Settings`
+- `disabled`
+  - accept unauthenticated client/admin requests
+
 ### Managed secrets
 
 - `GET /admin/secrets`
@@ -955,6 +972,38 @@ This is sourced from durable SQLite telemetry, not the runtime log queue.
 - `GET /admin/uninstall`
 
 Managed provider secrets are encrypted in SQLite after you create a vault password through `/admin/ui` or `/admin/secrets/vault/setup`. The vault is runtime-only: restart the gateway and it locks again until you unlock it with the same password. Admin responses never return plaintext secrets; they only report masked metadata such as source and update time.
+
+### Admin UI usage
+
+`/admin/ui` is now a multi-page operator console rather than a single scrolling dashboard. It uses client-side navigation with a sidebar and remembers the preferred landing page in browser local storage.
+
+Pages:
+
+- `Health`
+  - default landing page unless changed in Settings
+  - shows readiness, model/provider summary, probe budgets, scheduler state, token-estimation review flags, recent probe activity, and recent model errors
+  - uses graphical cards and progress bars for routability and budget usage
+- `Vault`
+  - contains the runtime password-vault workflow
+  - create the vault password, unlock/lock it, and save/delete provider secrets here
+- `Models`
+  - shows all discovered models with composite score, provider rank, capabilities, latency, tokenizer family, and active/healthy status
+  - lets operators filter the list and enable/disable models inline
+- `Settings`
+  - shows every public effective config value grouped by section, so operators do not have to guess key names
+  - lists active DB-backed overrides and provides the override editor
+  - also contains gateway-auth controls, the UI default-homepage selector, and uninstall guidance
+- `Logs`
+  - shows durable request telemetry from `request_log`
+  - supports loading filtered slices by outcome, provider, request source, and model id
+
+Recommended admin workflow:
+
+1. Start on `Health` to verify readiness, routable providers, probe budgets, and scheduler health.
+2. Go to `Vault` only when you need to unlock the runtime vault or rotate provider secrets.
+3. Use `Models` to inspect ranking outcomes and temporarily enable/disable models.
+4. Use `Settings` to inspect effective config first, then apply only targeted overrides or gateway-auth changes.
+5. Use `Logs` for request-level debugging and failure triage.
 
 ---
 
@@ -1004,7 +1053,11 @@ If `providers.<id>.api_key_env` is omitted, defaults are:
 
 OpenRouter remains separate and resolves from managed secret `openrouter_api_key` first, then `OPENROUTER_API_KEY`, plus `providers.openrouter.dev_stub_enabled` for explicit dev-only no-key mode.
 
-Gateway client auth resolves only from `GATEWAY_API_KEY`.
+Gateway client auth resolves in this order:
+
+1. managed `Settings` mode `enabled`
+2. managed `Settings` mode `disabled`
+3. inherited `GATEWAY_API_KEY` from the environment
 
 ### Logging settings
 

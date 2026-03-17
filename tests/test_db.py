@@ -108,6 +108,19 @@ def test_migration_v8_creates_secret_vault_config_table(tmp_path):
     assert columns == {"id", "salt_b64", "verifier_encrypted", "created_at", "updated_at"}
 
 
+def test_migration_v9_creates_gateway_auth_config_table(tmp_path):
+    db = Database(str(tmp_path / "db-migrate-v9.db"))
+    db.init()
+
+    with db.read_conn() as conn:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(gateway_auth_config)").fetchall()
+        }
+
+    assert columns == {"id", "mode", "token_salt_b64", "token_hash_b64", "created_at", "updated_at"}
+
+
 def test_set_override_uses_canonical_utc_timestamp(tmp_path):
     db = Database(str(tmp_path / "db-overrides.db"))
     db.init()
@@ -165,6 +178,29 @@ def test_secret_vault_config_round_trip_uses_canonical_timestamps(tmp_path):
     assert row is not None
     assert row["salt_b64"] == "salt"
     assert row["verifier_encrypted"] == "verifier"
+    assert row["updated_at"].endswith("Z")
+    assert "T" in row["updated_at"]
+
+
+def test_gateway_auth_config_round_trip_uses_canonical_timestamps(tmp_path):
+    db = Database(str(tmp_path / "db-gateway-auth-config.db"))
+    db.init()
+    db.writer.start()
+
+    db.set_gateway_auth_config(
+        mode="enabled",
+        token_salt_b64="salt",
+        token_hash_b64="hash",
+    )
+    db.writer.flush()
+
+    row = db.get_gateway_auth_config()
+    db.writer.stop()
+
+    assert row is not None
+    assert row["mode"] == "enabled"
+    assert row["token_salt_b64"] == "salt"
+    assert row["token_hash_b64"] == "hash"
     assert row["updated_at"].endswith("Z")
     assert "T" in row["updated_at"]
 

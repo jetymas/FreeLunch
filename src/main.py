@@ -19,7 +19,7 @@ from src.runtime_logging import (
     shutdown_runtime_logging,
 )
 from src.scheduler import build_scheduler, register_jobs, run_discovery_pipeline
-from src.secret_store import ManagedSecretStore, SecretVaultConfig
+from src.secret_store import GatewayAuthConfig, ManagedSecretStore, SecretVaultConfig
 from src.tokens import shutdown_tokenizer_preloads
 
 logger = get_logger(__name__)
@@ -91,6 +91,70 @@ def _load_managed_secrets(
     return secrets, status
 
 
+def _get_gateway_auth_config(db: Database) -> dict[str, object]:
+    row = db.get_gateway_auth_config()
+    if row is None:
+        return {
+            "mode": "inherit",
+            "enabled": False,
+            "source": "disabled",
+            "env_configured": False,
+            "updated_at": None,
+            "config": None,
+        }
+
+    mode = str(row["mode"] or "inherit")
+    config: GatewayAuthConfig | None = None
+    if mode == "enabled" and row["token_salt_b64"] and row["token_hash_b64"]:
+        config = GatewayAuthConfig(
+            token_salt_b64=str(row["token_salt_b64"]),
+            token_hash_b64=str(row["token_hash_b64"]),
+        )
+    return {
+        "mode": mode,
+        "enabled": mode == "enabled" and config is not None,
+        "source": "managed" if mode == "enabled" and config is not None else "disabled",
+        "env_configured": False,
+        "updated_at": row["updated_at"],
+        "config": config,
+    }
+
+
+def _resolve_gateway_auth_state(settings: Settings, db: Database) -> dict[str, object]:
+    env_key = settings.gateway_api_key.strip()
+    managed = _get_gateway_auth_config(db)
+    mode = str(managed["mode"])
+    if mode == "enabled" and managed["config"] is not None:
+        return {
+            "mode": mode,
+            "enabled": True,
+            "source": "managed",
+            "env_configured": bool(env_key),
+            "updated_at": managed["updated_at"],
+            "config": managed["config"],
+            "env_key": None,
+        }
+    if mode == "disabled":
+        return {
+            "mode": mode,
+            "enabled": False,
+            "source": "disabled",
+            "env_configured": bool(env_key),
+            "updated_at": managed["updated_at"],
+            "config": None,
+            "env_key": None,
+        }
+    return {
+        "mode": "inherit",
+        "enabled": bool(env_key),
+        "source": "env" if env_key else "disabled",
+        "env_configured": bool(env_key),
+        "updated_at": managed["updated_at"],
+        "config": None,
+        "env_key": env_key or None,
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.from_env()
@@ -120,6 +184,7 @@ async def lifespan(app: FastAPI):
     )
     settings.apply_managed_secrets(managed_secrets)
     _configure_database_logging(settings, db)
+    gateway_auth = _resolve_gateway_auth_state(settings, db)
 
     registry = ProviderRegistry()
     _configure_registry(settings, registry)
@@ -130,6 +195,7 @@ async def lifespan(app: FastAPI):
     app.state.secret_vault_config = secret_vault_config
     app.state.secret_store = secret_store
     app.state.secret_management_status = secret_status
+    app.state.gateway_auth = gateway_auth
     app.state.scheduler = build_scheduler()
     app.state.ready = False
     app.state.force_discovery = False
@@ -213,6 +279,7 @@ async def lifespan(app: FastAPI):
         app.state.secret_vault_config = new_secret_vault_config
         app.state.secret_store = new_secret_store
         app.state.secret_management_status = secret_status
+        app.state.gateway_auth = _resolve_gateway_auth_state(new_settings, db)
         apply_provider_runtime_state(new_settings)
         discovery_job = app.state.scheduler.get_job("discovery")
         if discovery_job is not None:

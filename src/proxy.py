@@ -34,7 +34,13 @@ from src.routing import (
     pick_candidates,
 )
 from src.runtime_logging import get_logger, get_runtime_logging_status, runtime_log
-from src.secret_store import SecretStorePasswordError, create_vault_config, unlock_vault
+from src.secret_store import (
+    SecretStorePasswordError,
+    create_gateway_auth_config,
+    create_vault_config,
+    unlock_vault,
+    verify_gateway_auth_token,
+)
 from src.tokens import estimate_required_tokens, request_contains_vision
 
 logger = get_logger(__name__)
@@ -67,13 +73,21 @@ def _candidate_token_observation(
 
 
 def _check_gateway_auth(request: Request, authorization: str | None) -> None:
-    required_key = request.app.state.settings.gateway_api_key
-    if not required_key:
+    auth_state = getattr(request.app.state, "gateway_auth", {})
+    if not auth_state or not auth_state.get("enabled"):
         return
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     token = authorization.split(" ", 1)[1]
-    if token != required_key:
+    source = str(auth_state.get("source", "disabled"))
+    if source == "env":
+        if token != auth_state.get("env_key"):
+            raise HTTPException(status_code=401, detail="invalid bearer token")
+        return
+    config = auth_state.get("config")
+    if source == "managed" and config is not None and verify_gateway_auth_token(token, config):
+        return
+    if source == "managed":
         raise HTTPException(status_code=401, detail="invalid bearer token")
 
 
@@ -122,23 +136,31 @@ def _parse_routing_preferences(request: Request) -> RoutingPreferences | None:
     )
 
 
-def _serialize_model_row(row: tuple) -> dict:
+def _serialize_model_row(row) -> dict:
     return {
-        "id": row[0],
-        "provider_id": row[1],
-        "provider_model_id": row[2],
-        "composite_score": row[3],
-        "is_healthy": bool(row[4]),
-        "is_active": bool(row[5]),
-        "supports_tools": bool(row[6]),
-        "supports_streaming": bool(row[7]),
-        "supports_vision": bool(row[8]),
-        "supports_structured_output": bool(row[9]),
-        "context_window": row[10],
-        "max_output_tokens": row[11],
-        "last_error": row[12],
-        "last_success_at": row[13],
-        "last_failure_at": row[14],
+        "id": row["id"],
+        "name": row["name"],
+        "provider_id": row["provider_id"],
+        "provider_model_id": row["provider_model_id"],
+        "composite_score": row["composite_score"],
+        "provider_rank": row["provider_rank"],
+        "is_healthy": bool(row["is_healthy"]),
+        "is_active": bool(row["is_active"]),
+        "supports_tools": bool(row["supports_tools"]),
+        "supports_streaming": bool(row["supports_streaming"]),
+        "supports_vision": bool(row["supports_vision"]),
+        "supports_structured_output": bool(row["supports_structured_output"]),
+        "supports_system_messages": bool(row["supports_system_messages"]),
+        "context_window": row["context_window"],
+        "max_output_tokens": row["max_output_tokens"],
+        "tokenizer_family": row["tokenizer_family"],
+        "avg_latency_ms": row["avg_latency_ms"],
+        "avg_ttfb_ms": row["avg_ttfb_ms"],
+        "last_error": row["last_error"],
+        "last_success_at": row["last_success_at"],
+        "last_failure_at": row["last_failure_at"],
+        "last_routed_at": row["last_routed_at"],
+        "cooldown_until": row["cooldown_until"],
     }
 
 
@@ -261,6 +283,45 @@ def _uninstall_info(settings: Settings) -> dict[str, object]:
             },
             {"label": "Shell", "command": "./uninstall.sh"},
         ],
+    }
+
+
+def _type_name(value: object) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, dict):
+        return "dict"
+    return "str"
+
+
+def _serialize_public_settings(settings: Settings) -> list[dict[str, object]]:
+    effective = settings.public_settings()
+    return [
+        {
+            "key": key,
+            "value": effective[key],
+            "type": _type_name(effective[key]),
+            "overridable": settings.is_overridable(key),
+            "section": key.split(".", 1)[0],
+        }
+        for key in sorted(effective)
+    ]
+
+
+def _gateway_auth_status(request: Request) -> dict[str, object]:
+    auth_state = getattr(request.app.state, "gateway_auth", {})
+    return {
+        "mode": auth_state.get("mode", "inherit"),
+        "enabled": bool(auth_state.get("enabled")),
+        "source": auth_state.get("source", "disabled"),
+        "env_configured": bool(auth_state.get("env_configured")),
+        "updated_at": auth_state.get("updated_at"),
     }
 
 
@@ -510,9 +571,11 @@ def build_router() -> APIRouter:
         with db.read_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT id, provider_id, provider_model_id, composite_score, is_healthy, is_active,
-                       supports_tools, supports_streaming, supports_vision, supports_structured_output,
-                       context_window, max_output_tokens, last_error, last_success_at, last_failure_at
+                SELECT id, name, provider_id, provider_model_id, composite_score, provider_rank,
+                       is_healthy, is_active, supports_tools, supports_streaming, supports_vision,
+                       supports_structured_output, supports_system_messages, context_window,
+                       max_output_tokens, tokenizer_family, avg_latency_ms, avg_ttfb_ms, last_error,
+                       last_success_at, last_failure_at, last_routed_at, cooldown_until
                 FROM models
                 ORDER BY composite_score DESC
                 """
@@ -528,9 +591,11 @@ def build_router() -> APIRouter:
         with db.read_conn() as conn:
             row = conn.execute(
                 """
-                SELECT id, provider_id, provider_model_id, composite_score, is_healthy, is_active,
-                       supports_tools, supports_streaming, supports_vision, supports_structured_output,
-                       context_window, max_output_tokens, last_error, last_success_at, last_failure_at
+                SELECT id, name, provider_id, provider_model_id, composite_score, provider_rank,
+                       is_healthy, is_active, supports_tools, supports_streaming, supports_vision,
+                       supports_structured_output, supports_system_messages, context_window,
+                       max_output_tokens, tokenizer_family, avg_latency_ms, avg_ttfb_ms, last_error,
+                       last_success_at, last_failure_at, last_routed_at, cooldown_until
                 FROM models
                 WHERE id=?
                 """,
@@ -648,8 +713,84 @@ def build_router() -> APIRouter:
         ]
         return {
             "overrides": overrides,
+            "effective_values": _serialize_public_settings(request.app.state.settings),
+            "overridable_keys": sorted(
+                key
+                for key in request.app.state.settings.public_settings()
+                if request.app.state.settings.is_overridable(key)
+            ),
             "effective": request.app.state.settings.public_settings(),
+            "gateway_auth": _gateway_auth_status(request),
         }
+
+    @router.get("/admin/gateway-auth")
+    async def admin_gateway_auth(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        return _gateway_auth_status(request)
+
+    @router.put("/admin/gateway-auth")
+    async def admin_set_gateway_auth(
+        payload: dict,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        key = str(payload.get("key", "")).strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="gateway auth key cannot be empty")
+
+        config = create_gateway_auth_config(key)
+        db = request.app.state.db
+        db.set_gateway_auth_config(
+            mode="enabled",
+            token_salt_b64=config.token_salt_b64,
+            token_hash_b64=config.token_hash_b64,
+        )
+        db.writer.flush()
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.gateway_auth.updated",
+            verbosity="verbose",
+            message="Updated managed gateway auth key",
+        )
+        return _gateway_auth_status(request)
+
+    @router.delete("/admin/gateway-auth")
+    async def admin_disable_gateway_auth(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        db = request.app.state.db
+        db.set_gateway_auth_config(mode="disabled")
+        db.writer.flush()
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.gateway_auth.disabled",
+            verbosity="verbose",
+            message="Disabled gateway auth via managed override",
+        )
+        return _gateway_auth_status(request)
+
+    @router.post("/admin/gateway-auth/inherit")
+    async def admin_inherit_gateway_auth(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        db = request.app.state.db
+        db.set_gateway_auth_config(mode="inherit")
+        db.writer.flush()
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.gateway_auth.inherit",
+            verbosity="verbose",
+            message="Gateway auth reverted to environment inheritance",
+        )
+        return _gateway_auth_status(request)
 
     @router.get("/admin/secrets")
     async def admin_secrets(
@@ -896,6 +1037,9 @@ def build_router() -> APIRouter:
         authorization: str | None = Header(default=None),
         limit: int = 50,
         success_only: bool | None = None,
+        provider_id: str | None = None,
+        request_source: str | None = None,
+        model_id: str | None = None,
     ) -> dict:
         _check_gateway_auth(request, authorization)
         capped_limit = min(max(limit, 1), 500)
@@ -907,12 +1051,23 @@ def build_router() -> APIRouter:
         if success_only is not None:
             where.append("success=?")
             params.append(1 if success_only else 0)
+        if provider_id:
+            where.append("provider_id=?")
+            params.append(provider_id.strip())
+        if request_source:
+            where.append("request_source=?")
+            params.append(request_source.strip())
+        if model_id:
+            where.append("selected_model_id=?")
+            params.append(model_id.strip())
 
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         query = (
-            "SELECT request_id, timestamp, selected_model_id, provider_id, attempt_index, was_fallback, "
-            "latency_ms, ttfb_ms, success, gateway_error_category, error_code, error_message, "
-            "was_streaming, had_tools, had_vision "
+            "SELECT request_id, timestamp, request_source, selected_model_id, provider_id, "
+            "selected_provider_model_id, selected_tokenizer_family, attempt_index, was_fallback, "
+            "estimated_prompt_tokens, selected_context_window, prompt_tokens, completion_tokens, "
+            "total_tokens, latency_ms, ttfb_ms, success, gateway_error_category, error_code, "
+            "error_message, was_streaming, had_tools, had_vision "
             f"FROM request_log {where_sql} ORDER BY timestamp DESC, id DESC LIMIT ?"
         )
         params.append(capped_limit)
@@ -924,23 +1079,41 @@ def build_router() -> APIRouter:
             {
                 "request_id": row[0],
                 "timestamp": row[1],
-                "selected_model_id": row[2],
-                "provider_id": row[3],
-                "attempt_index": row[4],
-                "was_fallback": bool(row[5]),
-                "latency_ms": row[6],
-                "ttfb_ms": row[7],
-                "success": bool(row[8]),
-                "gateway_error_category": row[9],
-                "error_code": row[10],
-                "error_message": row[11],
-                "was_streaming": bool(row[12]),
-                "had_tools": bool(row[13]),
-                "had_vision": bool(row[14]),
+                "request_source": row[2],
+                "selected_model_id": row[3],
+                "provider_id": row[4],
+                "selected_provider_model_id": row[5],
+                "selected_tokenizer_family": row[6],
+                "attempt_index": row[7],
+                "was_fallback": bool(row[8]),
+                "estimated_prompt_tokens": row[9],
+                "selected_context_window": row[10],
+                "prompt_tokens": row[11],
+                "completion_tokens": row[12],
+                "total_tokens": row[13],
+                "latency_ms": row[14],
+                "ttfb_ms": row[15],
+                "success": bool(row[16]),
+                "gateway_error_category": row[17],
+                "error_code": row[18],
+                "error_message": row[19],
+                "was_streaming": bool(row[20]),
+                "had_tools": bool(row[21]),
+                "had_vision": bool(row[22]),
             }
             for row in rows
         ]
-        return {"logs": logs, "count": len(logs), "limit": capped_limit}
+        return {
+            "logs": logs,
+            "count": len(logs),
+            "limit": capped_limit,
+            "filters": {
+                "success_only": success_only,
+                "provider_id": provider_id,
+                "request_source": request_source,
+                "model_id": model_id,
+            },
+        }
 
     @router.post("/v1/chat/completions")
     async def chat_completions(

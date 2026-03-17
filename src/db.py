@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
-DB_SCHEMA_VERSION = 8
+DB_SCHEMA_VERSION = 9
 DEFAULT_LOW_PRIORITY_LOG_QUEUE_SIZE = 5000
 HIGH_PRIORITY_QUEUE_RESERVE = 256
 
@@ -123,6 +123,15 @@ def _create_base_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY CHECK (id = 1),
             salt_b64 TEXT NOT NULL,
             verifier_encrypted TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS gateway_auth_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            mode TEXT NOT NULL,
+            token_salt_b64 TEXT DEFAULT NULL,
+            token_hash_b64 TEXT DEFAULT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -261,6 +270,21 @@ def migrate_to_v8(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_to_v9(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gateway_auth_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            mode TEXT NOT NULL,
+            token_salt_b64 TEXT DEFAULT NULL,
+            token_hash_b64 TEXT DEFAULT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, migrate_to_v1),
     (2, migrate_to_v2),
@@ -270,6 +294,7 @@ MIGRATIONS: list[tuple[int, Any]] = [
     (6, migrate_to_v6),
     (7, migrate_to_v7),
     (8, migrate_to_v8),
+    (9, migrate_to_v9),
 ]
 
 
@@ -532,6 +557,39 @@ class Database:
                 updated_at=excluded.updated_at
             """,
             (salt_b64, verifier_encrypted, now, now),
+        )
+
+    def get_gateway_auth_config(self) -> sqlite3.Row | None:
+        with self.read_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT mode, token_salt_b64, token_hash_b64, created_at, updated_at
+                FROM gateway_auth_config
+                WHERE id=1
+                """
+            ).fetchone()
+        return cast(sqlite3.Row | None, row)
+
+    def set_gateway_auth_config(
+        self,
+        *,
+        mode: str,
+        token_salt_b64: str | None = None,
+        token_hash_b64: str | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        self.writer.enqueue(
+            """
+            INSERT INTO gateway_auth_config(
+                id, mode, token_salt_b64, token_hash_b64, created_at, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                mode=excluded.mode,
+                token_salt_b64=excluded.token_salt_b64,
+                token_hash_b64=excluded.token_hash_b64,
+                updated_at=excluded.updated_at
+            """,
+            (mode, token_salt_b64, token_hash_b64, now, now),
         )
 
     def configure_logging(self, *, request_log_enabled: bool, request_log_queue_size: int) -> None:
