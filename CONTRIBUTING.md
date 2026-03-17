@@ -64,6 +64,8 @@ python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
 python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
 ```
 
+Agents and contributors should treat the commands above as the default local push gate. Do not push code changes until that local gate is green.
+
 Python 3.14 warning-hygiene baseline for contributors:
 
 - `fastapi==0.115.14`
@@ -191,6 +193,26 @@ sh -n uninstall.sh
 pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$null) | Out-Null"
 pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('uninstall.ps1',[ref]$null,[ref]$null) | Out-Null"
 ```
+
+For release-facing changes, or any change touching installers, Docker behavior, startup/bootstrap, auth, or CI-sensitive scripts, complete the full local gate before pushing:
+
+```bash
+python -m ruff check .
+python -m mypy src
+python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
+python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
+sh -n install.sh
+sh -n uninstall.sh
+pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$null) | Out-Null"
+pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('uninstall.ps1',[ref]$null,[ref]$null) | Out-Null"
+```
+
+Preferred release flow:
+
+1. complete the local push gate
+2. push to `main`
+3. wait for `main` CI to pass
+4. create the semver release tag only after `main` is green
 
 Keep installer behavior aligned with the current Docker-first runtime model. Avoid destructive host-level side effects.
 

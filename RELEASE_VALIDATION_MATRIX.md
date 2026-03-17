@@ -16,6 +16,7 @@ Use with:
 - capture pass/fail plus short notes for anomalies
 - attach logs/screenshots only for failures or non-obvious passes
 - keep API spend low; live-provider checks are tiny-request only
+- before a release tag is pushed, the local pre-push gate should already be green (`ruff`, `mypy`, full pytest, coverage, and installer syntax checks)
 
 ## 2. Matrix
 
@@ -79,3 +80,4 @@ Release sign-off requires:
 2. M7 documented with expected behavior observed.
 3. M8 executed or explicitly waived with rationale.
 4. Any host-unavailable leg (for example M3 on missing macOS access) must be explicitly accepted/waived by project owner and recorded in `RELEASE_VALIDATION_EVIDENCE.md`.
+5. The release tag is pushed only after the corresponding `main` commit has already passed CI.

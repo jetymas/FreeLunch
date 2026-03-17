@@ -64,6 +64,21 @@ python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
 python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
 ```
 
+Agents must not push until the relevant local validation gate is green. For ordinary code changes, that means at minimum the commands above. For release-facing changes, installer changes, CI-sensitive scripting changes, startup/bootstrap changes, or broad cross-cutting edits, run the full gate before pushing:
+
+```bash
+python -m ruff check .
+python -m mypy src
+python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
+python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
+sh -n install.sh
+sh -n uninstall.sh
+pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$null) | Out-Null"
+pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('uninstall.ps1',[ref]$null,[ref]$null) | Out-Null"
+```
+
+Release rule: push to `main`, wait for `main` CI to pass, and only then create/push the semver release tag.
+
 Notes:
 
 - Repo-wide Ruff is configured to ignore vendored local dependency folders such as `.pydeps`.
