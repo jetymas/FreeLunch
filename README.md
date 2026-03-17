@@ -26,7 +26,7 @@ Model/provider availability changes constantly. FreeLunch gives clients one stab
 | OpenAI-compatible gateway | Use standard chat/models client flows |
 | Health-aware routing | Prefer healthy/capable candidates |
 | Bounded failover | Retry alternates without unbounded loops |
-| Admin observability | `/admin/health`, `/admin/config`, `/admin/logs` |
+| Admin observability | `/admin/ui`, `/admin/health`, `/admin/config`, `/admin/logs`, `/admin/secrets` |
 | Durable telemetry | Request/probe evidence in SQLite |
 | Low operational overhead | Single-node design with SQLite + scheduler loops |
 
@@ -56,6 +56,8 @@ irm https://raw.githubusercontent.com/jetymas/FreeLunch/main/install.ps1 | iex
    - Repo/docker-compose flow: copy `.env.example` to `.env` and set keys there.
    - Required for installer/default provider bootstrap: `OPENROUTER_API_KEY`.
    - Optional gateway auth key: `GATEWAY_API_KEY` (clients then send `Authorization: Bearer <key>`).
+   - Optional managed provider secrets: open `http://localhost:8000/admin/ui`, create a vault password, then save provider keys through the UI or `/admin/secrets`.
+   - Installer flow also prints the Admin UI URL and can create a desktop shortcut for it.
 
 Example `.env` values:
 
@@ -106,6 +108,8 @@ If `GATEWAY_API_KEY` is set, send `Authorization: Bearer <your-key>` with reques
 ## Security Notes
 
 - Keep real provider keys only in local `.env` files or your deployment secret store; do not commit populated secrets.
+- Managed provider secrets are encrypted in SQLite and unlocked at runtime with a local vault password. The vault stays unlocked only for the running process.
+- Gateway auth is not part of the managed vault. If you want bearer auth, keep using `GATEWAY_API_KEY`.
 - Rotate all provider and gateway keys before/at public release, then restart the gateway so runtime picks up rotated credentials.
 - Treat leaked keys as compromised even if exposure was brief, and replace them immediately.
 
@@ -325,14 +329,14 @@ FreeLunch is:
 - a single-node service with SQLite persistence
 - a routing layer that chooses among discovered healthy free models
 - a small scheduler that keeps model, health, benchmark, and config state fresh
-- an operator-friendly service with JSON admin endpoints and queue-backed runtime logs
+- an operator-friendly service with JSON admin endpoints, a lightweight admin UI, and queue-backed runtime logs
 
 FreeLunch is not:
 
 - a local inference runner
 - a multi-node control plane
 - a broad multi-provider integration layer on day one
-- a web dashboard product
+- a polished end-user chat/dashboard product
 
 ---
 
@@ -896,6 +900,7 @@ FreeLunch exposes operator-facing JSON admin endpoints.
 
 ### Model inspection and control
 
+- `GET /admin/ui`
 - `GET /admin/models`
 - `GET /admin/models/{id}`
 - `POST /admin/models/{id}/disable`
@@ -916,6 +921,7 @@ This currently includes:
 - probe runtime state
 - recent probe/bootstrap activity
 - token-estimation review summary
+- secret-management status
 - recent model error summary
 
 ### Config inspection and runtime overrides
@@ -937,6 +943,18 @@ This forces an immediate discovery/ranking pass through the same discovery runne
 - `GET /admin/logs`
 
 This is sourced from durable SQLite telemetry, not the runtime log queue.
+
+### Managed secrets
+
+- `GET /admin/secrets`
+- `POST /admin/secrets/vault/setup`
+- `POST /admin/secrets/vault/unlock`
+- `POST /admin/secrets/vault/lock`
+- `PUT /admin/secrets/{key}`
+- `DELETE /admin/secrets/{key}`
+- `GET /admin/uninstall`
+
+Managed provider secrets are encrypted in SQLite after you create a vault password through `/admin/ui` or `/admin/secrets/vault/setup`. The vault is runtime-only: restart the gateway and it locks again until you unlock it with the same password. Admin responses never return plaintext secrets; they only report masked metadata such as source and update time.
 
 ---
 
@@ -969,8 +987,9 @@ There are four different control surfaces and they are intentionally distinct:
 
 For OpenAI-compatible providers (`openai`, `together`, `groq`, `deepseek`, `xai`, `cerebras`, `perplexity`, `nvidia`), credentials are resolved from:
 
-1. environment variable named by `providers.<id>.api_key_env`
-2. fallback inline `providers.<id>.api_key` (if set)
+1. managed secret `providers.<id>.api_key` when saved through the unlocked secret vault
+2. environment variable named by `providers.<id>.api_key_env`
+3. fallback inline `providers.<id>.api_key` (if set)
 
 If `providers.<id>.api_key_env` is omitted, defaults are:
 
@@ -983,7 +1002,9 @@ If `providers.<id>.api_key_env` is omitted, defaults are:
 - `perplexity`: `PERPLEXITY_API_KEY`
 - `nvidia`: `NVIDIA_API_KEY`
 
-OpenRouter remains separate and uses `OPENROUTER_API_KEY` plus `providers.openrouter.dev_stub_enabled` for explicit dev-only no-key mode.
+OpenRouter remains separate and resolves from managed secret `openrouter_api_key` first, then `OPENROUTER_API_KEY`, plus `providers.openrouter.dev_stub_enabled` for explicit dev-only no-key mode.
+
+Gateway client auth resolves only from `GATEWAY_API_KEY`.
 
 ### Logging settings
 

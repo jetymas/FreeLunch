@@ -2,7 +2,7 @@
 
 ## Overall status
 
-The codebase is now a **feature-complete implementation for the accepted OpenRouter-first scope** and a **landed first pass of multi-provider onboarding**: bounded failover, admin/config APIs, scheduled discovery/ranking/health jobs, queue-backed runtime logging, installer assets, descriptor/factory provider bootstrap, and a green automated test suite.
+The codebase is now a **feature-complete implementation for the accepted OpenRouter-first scope** and a **landed first pass of multi-provider onboarding**: bounded failover, admin/config APIs, encrypted managed secrets, a lightweight admin UI, scheduled discovery/ranking/health jobs, queue-backed runtime logging, installer assets, descriptor/factory provider bootstrap, and a green automated test suite.
 
 The approved module-only provider-platform objective is now implemented for the first API-key wave: providers can be onboarded via `src/providers/<id>.py` plus config enablement without adding provider-specific logic to `src/main.py`, `src/proxy.py`, or `src/health.py`.
 
@@ -18,7 +18,7 @@ Quality target update (March 2026): repository policy targets **97%+** line cove
 - Core schema coverage for `models`, `request_log`, `leaderboard_cache`, and `config_overrides`.
 - Provider registry plus an OpenRouter adapter for discovery, chat completions, streaming, probing, and normalized error mapping.
 - Core API surface implemented: `/healthz`, `/readyz`, `/v1/models`, `/v1/chat/completions`.
-- Admin API surface implemented: `/admin/models`, `/admin/models/{id}`, enable/disable endpoints, `/admin/health`, `/admin/config`, `/admin/refresh`, and `/admin/logs`.
+- Admin API surface implemented: `/admin/ui`, `/admin/models`, `/admin/models/{id}`, enable/disable endpoints, `/admin/health`, `/admin/secrets`, `/admin/secrets/vault/*`, `/admin/uninstall`, `/admin/config`, `/admin/refresh`, and `/admin/logs`.
 - Bounded multi-candidate routing with capability filters, fallback insertion, request-preference headers, and retryable failover.
 - Streaming relay hardening for pre-first-byte failover, keepalive suppression, TTFB capture, and terminal `[DONE]` handling.
 - Health and ranking loops that use passive request telemetry plus conservative active probes, exponential cooldown backoff, and composite scoring.
@@ -89,6 +89,7 @@ Residual work:
 - OpenRouter rows are now deactivated when inference is not runtime-capable, including the case where no API key is present and explicit dev-stub mode is off.
 - Runtime overrides are now applied at startup, on admin mutation, and via a periodic config-refresh job.
 - The DB writer queue is now bounded, low-priority client logs are explicitly lossy, and reserved queue capacity plus blocking backpressure protect higher-priority metadata writes.
+- Managed provider secrets are now stored in a dedicated encrypted SQLite table behind a runtime password vault, re-applied during unlock/runtime reload, and surfaced only as masked metadata through `/admin/secrets` and `/admin/health`.
 
 ### 5) Provider realism is accepted for current shipped scope, with one explicit dev-only escape hatch (intentional boundary)
 

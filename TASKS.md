@@ -91,6 +91,8 @@ Wave D verification snapshot (latest run):
 - [x] Keep `SPEC_GAP_REVIEW.md` current whenever a spec-facing feature lands.
 - [x] Keep `OPERATIONS.md`, `README.md`, and `config.yaml.example` synchronized with runtime behavior when provider-platform/config/logging behavior changes.
 - [x] Keep this task list pruned and execution-oriented.
+- [x] Add encrypted managed-secret storage plus a lightweight admin UI for health/model/config/log review, runtime password-vault unlock, and secret management.
+  Files: `src/*`, `tests/*`, `.env.example`, `README.md`, `OPERATIONS.md`, `FREELUNCH_SPEC_v8.md`, `SPEC_GAP_REVIEW.md`
 
 ## P2 Pre-Public Validation (March 2026)
 

@@ -349,11 +349,19 @@ Fields:
 
 ### 6.4 Admin Endpoints
 
+- `GET /admin/ui`
 - `GET /admin/models`
 - `GET /admin/models/{id}`
 - `POST /admin/models/{id}/disable`
 - `POST /admin/models/{id}/enable`
 - `GET /admin/health`
+- `GET /admin/secrets`
+- `POST /admin/secrets/vault/setup`
+- `POST /admin/secrets/vault/unlock`
+- `POST /admin/secrets/vault/lock`
+- `PUT /admin/secrets/{key}`
+- `DELETE /admin/secrets/{key}`
+- `GET /admin/uninstall`
 - `GET /admin/config`
 - `PUT /admin/config/{key}`
 - `DELETE /admin/config/{key}`
@@ -368,6 +376,7 @@ Fields:
 - DB writer status
 - scheduler job state
 - provider summary
+- secret-management status
 - runtime logging status
 - recent model errors
 - probe budget usage

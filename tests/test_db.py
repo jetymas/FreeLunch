@@ -82,6 +82,32 @@ def test_migration_v6_backfills_provider_rank_from_openrouter_rank(tmp_path):
     assert row["openrouter_rank"] == 9
 
 
+def test_migration_v7_creates_managed_secrets_table(tmp_path):
+    db = Database(str(tmp_path / "db-migrate-v7.db"))
+    db.init()
+
+    with db.read_conn() as conn:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(managed_secrets)").fetchall()
+        }
+
+    assert columns == {"key", "value_encrypted", "created_at", "updated_at"}
+
+
+def test_migration_v8_creates_secret_vault_config_table(tmp_path):
+    db = Database(str(tmp_path / "db-migrate-v8.db"))
+    db.init()
+
+    with db.read_conn() as conn:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(secret_vault_config)").fetchall()
+        }
+
+    assert columns == {"id", "salt_b64", "verifier_encrypted", "created_at", "updated_at"}
+
+
 def test_set_override_uses_canonical_utc_timestamp(tmp_path):
     db = Database(str(tmp_path / "db-overrides.db"))
     db.init()
@@ -99,6 +125,46 @@ def test_set_override_uses_canonical_utc_timestamp(tmp_path):
 
     assert row is not None
     assert row["value"] == "15"
+    assert row["updated_at"].endswith("Z")
+    assert "T" in row["updated_at"]
+
+
+def test_managed_secret_round_trip_uses_canonical_timestamps(tmp_path):
+    db = Database(str(tmp_path / "db-managed-secrets.db"))
+    db.init()
+    db.writer.start()
+
+    db.set_managed_secret("providers.openai.api_key", "ciphertext")
+    db.writer.flush()
+
+    values = db.get_managed_secret_values()
+    rows = db.list_managed_secrets()
+    db.delete_managed_secret("providers.openai.api_key")
+    db.writer.flush()
+    after_delete = db.get_managed_secret_values()
+    db.writer.stop()
+
+    assert values == {"providers.openai.api_key": "ciphertext"}
+    assert rows[0]["key"] == "providers.openai.api_key"
+    assert rows[0]["updated_at"].endswith("Z")
+    assert "T" in rows[0]["updated_at"]
+    assert after_delete == {}
+
+
+def test_secret_vault_config_round_trip_uses_canonical_timestamps(tmp_path):
+    db = Database(str(tmp_path / "db-secret-vault-config.db"))
+    db.init()
+    db.writer.start()
+
+    db.set_secret_vault_config(salt_b64="salt", verifier_encrypted="verifier")
+    db.writer.flush()
+
+    row = db.get_secret_vault_config()
+    db.writer.stop()
+
+    assert row is not None
+    assert row["salt_b64"] == "salt"
+    assert row["verifier_encrypted"] == "verifier"
     assert row["updated_at"].endswith("Z")
     assert "T" in row["updated_at"]
 

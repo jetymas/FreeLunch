@@ -1,0 +1,267 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1118;
+  --bg-accent: #132231;
+  --panel: rgba(15, 23, 33, 0.94);
+  --panel-strong: rgba(18, 30, 44, 0.98);
+  --line: #24394c;
+  --ink: #edf5ff;
+  --muted: #9db0c3;
+  --accent: #44c7a1;
+  --accent-strong: #2e9c7d;
+  --warn: #ff9a7a;
+  --shadow: 0 22px 60px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(68, 199, 161, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(79, 140, 255, 0.12), transparent 24%),
+    linear-gradient(180deg, #081018, var(--bg));
+}
+
+.page {
+  width: min(1280px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 32px 0 40px;
+}
+
+.hero,
+.toolbar,
+.grid {
+  display: grid;
+  gap: 18px;
+}
+
+.hero {
+  grid-template-columns: 1.5fr minmax(280px, 360px);
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+pre,
+button,
+input,
+select,
+code {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 0.95;
+}
+
+.subtitle {
+  max-width: 44rem;
+  color: var(--muted);
+}
+
+.auth-card,
+.panel,
+.toolbar {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+}
+
+.auth-card,
+.toolbar,
+.panel {
+  padding: 18px;
+}
+
+.auth-card,
+.stacked-form,
+.form-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.toolbar {
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel.span-two {
+  grid-column: span 2;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+label {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+input,
+select,
+button {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  font: inherit;
+}
+
+input,
+select {
+  width: 100%;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: rgba(6, 13, 20, 0.9);
+}
+
+button {
+  padding: 10px 14px;
+  background: linear-gradient(135deg, var(--accent), #3a8fff);
+  color: #081018;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+button.ghost {
+  color: var(--ink);
+  background: rgba(9, 18, 27, 0.86);
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.auth-actions,
+.inline-form,
+.form-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inline-form input,
+.inline-form select {
+  flex: 1 1 180px;
+}
+
+.json-block,
+code,
+.command-card {
+  background: rgba(5, 12, 18, 0.9);
+  border: 1px solid var(--line);
+}
+
+.json-block {
+  max-height: 320px;
+  overflow: auto;
+  padding: 14px;
+  border-radius: 14px;
+  font-size: 0.86rem;
+}
+
+.table-container {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  font-size: 0.92rem;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.status {
+  justify-self: end;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.status.error {
+  color: var(--warn);
+}
+
+.status.ok {
+  color: var(--accent);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.hidden {
+  display: none;
+}
+
+.command-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 14px;
+}
+
+code {
+  display: block;
+  width: 100%;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: #c9f8ea;
+}
+
+@media (max-width: 900px) {
+  .hero,
+  .grid,
+  .toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .panel.span-two {
+    grid-column: auto;
+  }
+
+  .status {
+    justify-self: start;
+  }
+}

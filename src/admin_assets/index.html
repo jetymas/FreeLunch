@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FreeLunch Admin</title>
+    <link rel="stylesheet" href="/admin/ui/app.css">
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">FreeLunch</p>
+          <h1>Admin Console</h1>
+          <p class="subtitle">Health, models, overrides, logs, and a runtime-unlocked provider secret vault.</p>
+        </div>
+        <div class="auth-card">
+          <label for="bearerToken">Bearer token</label>
+          <input id="bearerToken" type="password" placeholder="Optional when gateway auth is disabled">
+          <div class="auth-actions">
+            <button id="saveTokenButton" type="button">Use token</button>
+            <button id="clearTokenButton" type="button" class="ghost">Clear</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="toolbar">
+        <button id="refreshAllButton" type="button">Refresh all</button>
+        <button id="refreshDiscoveryButton" type="button" class="ghost">Run discovery refresh</button>
+        <span id="statusMessage" class="status idle">Idle</span>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Vault</h2>
+          </div>
+          <p id="vaultSummary" class="muted">Vault state unavailable.</p>
+
+          <form id="vaultSetupForm" class="stacked-form">
+            <label for="vaultSetupPassword">Create vault password</label>
+            <input id="vaultSetupPassword" type="password" placeholder="Choose a password for this machine">
+            <button type="submit">Create vault</button>
+          </form>
+
+          <form id="vaultUnlockForm" class="stacked-form hidden">
+            <label for="vaultUnlockPassword">Unlock vault</label>
+            <input id="vaultUnlockPassword" type="password" placeholder="Enter vault password">
+            <button type="submit">Unlock vault</button>
+          </form>
+
+          <div id="vaultUnlockedCard" class="stacked-form hidden">
+            <p class="muted">The vault is unlocked for this running process only. Restarting FreeLunch locks it again.</p>
+            <button id="lockVaultButton" type="button" class="ghost">Lock vault</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Health</h2>
+          </div>
+          <pre id="healthOutput" class="json-block"></pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Provider Secrets</h2>
+          </div>
+          <form id="secretForm" class="stacked-form">
+            <label for="secretKey">Secret target</label>
+            <select id="secretKey"></select>
+            <label for="secretValue">Secret value</label>
+            <input id="secretValue" type="password" placeholder="Enter a new secret value">
+            <div class="form-actions">
+              <button type="submit">Save secret</button>
+              <button id="deleteSecretButton" type="button" class="ghost">Delete secret</button>
+            </div>
+          </form>
+          <p id="secretHelp" class="muted">Unlock the vault to edit provider secrets.</p>
+          <div id="secretSummary" class="table-container"></div>
+        </article>
+
+        <article class="panel span-two">
+          <div class="panel-header">
+            <h2>Models</h2>
+          </div>
+          <div id="modelsTable" class="table-container"></div>
+        </article>
+
+        <article class="panel span-two">
+          <div class="panel-header">
+            <h2>Config Overrides</h2>
+          </div>
+          <form id="configForm" class="inline-form">
+            <input id="configKey" type="text" placeholder="routing.max_attempts">
+            <input id="configValue" type="text" placeholder='JSON value, e.g. 4 or "debug"'>
+            <button type="submit">Set override</button>
+            <button id="deleteConfigButton" type="button" class="ghost">Delete override</button>
+          </form>
+          <div id="configTable" class="table-container"></div>
+        </article>
+
+        <article class="panel span-two">
+          <div class="panel-header">
+            <h2>Logs</h2>
+          </div>
+          <form id="logsForm" class="inline-form">
+            <input id="logsLimit" type="number" min="1" max="500" value="20">
+            <select id="logsSuccessOnly">
+              <option value="">All</option>
+              <option value="true">Success only</option>
+              <option value="false">Failures only</option>
+            </select>
+            <button type="submit">Load logs</button>
+          </form>
+          <div id="logsTable" class="table-container"></div>
+        </article>
+
+        <article class="panel span-two">
+          <div class="panel-header">
+            <h2>Uninstall</h2>
+          </div>
+          <div id="uninstallPanel" class="stacked-form"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/admin/ui/app.js"></script>
+  </body>
+</html>

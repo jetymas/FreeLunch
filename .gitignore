@@ -16,6 +16,7 @@ bench_pytest_output.txt
 tmp*.db
 .testkey
 .github_logs
+.local_assets
 
 # Local secret material
 .env

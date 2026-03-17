@@ -11,6 +11,9 @@ $SkipPull = $false
 if ($env:FREELUNCH_SKIP_PULL) {
     $SkipPull = @("1", "true", "yes") -contains $env:FREELUNCH_SKIP_PULL.ToLowerInvariant()
 }
+$script:CreateShortcutResponse = ""
+$script:AdminShortcutPath = ""
+$script:GatewayPort = ""
 $script:Upgrading = $false
 
 function Write-Info { param([string]$Message) Write-Host "[INFO] $Message" -ForegroundColor Cyan }
@@ -80,6 +83,7 @@ function Write-EnvFile {
     }
     $gatewayKey = Read-Value "Gateway API key (leave blank to disable auth)" "" "GATEWAY_API_KEY"
     $gatewayPort = Read-Value "Gateway port" $DefaultPort "FREELUNCH_PORT"
+    $script:GatewayPort = $gatewayPort
 
     @"
 OPENROUTER_API_KEY=$openrouterKey
@@ -168,6 +172,63 @@ services:
 '@ | Set-Content -Path (Join-Path $InstallDir "docker-compose.yml") -Encoding UTF8
 }
 
+function Sync-PortFromEnv {
+    $envPath = Join-Path $InstallDir ".env"
+    if (-not (Test-Path $envPath)) {
+        $script:GatewayPort = $DefaultPort
+        return
+    }
+    $line = Get-Content $envPath | Where-Object { $_ -like "FREELUNCH_PORT=*" } | Select-Object -Last 1
+    if ($line) {
+        $parts = $line -split "=", 2
+        if ($parts.Length -ge 2) {
+            $script:GatewayPort = $parts[1]
+            return
+        }
+    }
+    $script:GatewayPort = $DefaultPort
+}
+
+function Determine-ShortcutPreference {
+    if ($script:CreateShortcutResponse) {
+        return
+    }
+    $script:CreateShortcutResponse = Read-Value "Create Admin UI desktop shortcut?" "yes" "FREELUNCH_CREATE_ADMIN_SHORTCUT"
+}
+
+function Should-CreateShortcut {
+    if (-not $script:CreateShortcutResponse) {
+        return $false
+    }
+    switch ($script:CreateShortcutResponse.ToLowerInvariant()) {
+        "1" { return $true }
+        "y" { return $true }
+        "yes" { return $true }
+        "true" { return $true }
+        "on" { return $true }
+    }
+    return $false
+}
+
+function Create-AdminShortcut {
+    if (-not (Should-CreateShortcut)) {
+        return
+    }
+    if (-not $script:GatewayPort) {
+        Sync-PortFromEnv
+    }
+    $desktopDir = Join-Path $env:USERPROFILE "Desktop"
+    if (-not (Test-Path $desktopDir)) {
+        Write-Warn "Desktop directory not found; skipping Admin UI shortcut creation."
+        return
+    }
+    $url = "http://localhost:$($script:GatewayPort)/admin/ui"
+    $shortcutPath = Join-Path $desktopDir "FreeLunch Admin UI.url"
+    "[InternetShortcut]" + "`n" + "URL=$url" | Set-Content -Path $shortcutPath -Encoding ASCII
+    $script:AdminShortcutPath = $shortcutPath
+    Write-Info "Created Admin UI shortcut at $shortcutPath"
+}
+
 function Start-FreeLunch {
     if (-not $SkipPull) {
         Write-Info "Pulling $Image"
@@ -197,18 +258,25 @@ function Print-Summary {
     Write-Host ""
     Write-Host "FreeLunch installed."
     Write-Host "Gateway URL: http://localhost:$port/v1"
+    Write-Host "Admin UI: http://localhost:$port/admin/ui"
     Write-Host "Health check: http://localhost:$port/healthz"
     Write-Host "Install dir: $InstallDir"
     Write-Host "Logs: docker compose --project-directory `"$InstallDir`" -f `"$InstallDir\\docker-compose.yml`" logs -f"
     Write-Host "Stop: docker compose --project-directory `"$InstallDir`" -f `"$InstallDir\\docker-compose.yml`" down"
     Write-Host "Uninstall: .\\uninstall.ps1"
+    if ($script:AdminShortcutPath) {
+        Write-Host "Desktop shortcut: $($script:AdminShortcutPath)"
+    }
 }
 
 Write-Info "Installing FreeLunch from $Image"
 Assert-Docker
 Setup-InstallDir
 Write-EnvFile
+Sync-PortFromEnv
+Determine-ShortcutPreference
 Write-ConfigFile
 Write-ComposeFile
 Start-FreeLunch
+Create-AdminShortcut
 Print-Summary

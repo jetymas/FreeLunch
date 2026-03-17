@@ -205,6 +205,7 @@ def test_admin_endpoints(client):
     assert "probe_state" in health_payload
     assert "recent_probe_activity" in health_payload
     assert "token_estimation_review" in health_payload
+    assert "secret_management" in health_payload
     assert "maintenance" in health_payload["scheduler"]["jobs"]
     assert "config_refresh" in health_payload["scheduler"]["jobs"]
 
@@ -214,6 +215,12 @@ def test_admin_endpoints(client):
     assert "overrides" in config_payload
     assert "effective" in config_payload
     assert "logging.runtime_verbosity" in config_payload["effective"]
+
+    secrets_response = client.get("/admin/secrets")
+    assert secrets_response.status_code == 200
+    secrets_payload = secrets_response.json()
+    assert "secret_management" in secrets_payload
+    assert secrets_payload["secrets"]
 
 
 def test_admin_health_reports_probe_budget_usage(client):
@@ -238,6 +245,109 @@ def test_admin_health_reports_probe_budget_usage(client):
     assert budget["limit"] == 5
     assert budget["used"] >= 2
     assert budget["remaining"] == budget["limit"] - budget["used"]
+
+
+def test_admin_secret_endpoints_require_vault_for_mutation(client):
+    response = client.put("/admin/secrets/openrouter_api_key", json={"value": "secret"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "secret vault is not configured"
+
+
+def test_managed_provider_secret_updates_registry_and_secret_listing(tmp_path, monkeypatch):
+    with _build_client_with_config(
+        tmp_path,
+        monkeypatch,
+        """
+providers:
+  enabled:
+    - openai
+  openrouter:
+    enabled: false
+  openai:
+    enabled: true
+    discovery_enabled: true
+    inference_enabled: true
+    api_base: https://openai.custom/v1
+""",
+    ) as client:
+        setup_response = client.post(
+            "/admin/secrets/vault/setup",
+            json={"password": "vault-password"},
+        )
+        assert setup_response.status_code == 200
+        assert setup_response.json()["secret_management"]["configured"] is True
+        assert setup_response.json()["secret_management"]["unlocked"] is True
+
+        response = client.put(
+            "/admin/secrets/providers.openai.api_key",
+            json={"value": "managed-openai-key"},
+        )
+        assert response.status_code == 200
+
+        secrets_payload = client.get("/admin/secrets").json()
+        openai_secret = next(
+            item for item in secrets_payload["secrets"] if item["key"] == "providers.openai.api_key"
+        )
+        assert openai_secret["source"] == "managed"
+        assert openai_secret["configured"] is True
+
+        registered = client.app.state.registry.get_registered("openai")
+        assert registered.adapter.api_key == "managed-openai-key"
+        assert registered.inference_enabled is True
+
+        lock_response = client.post("/admin/secrets/vault/lock")
+        assert lock_response.status_code == 200
+        assert lock_response.json()["secret_management"]["unlocked"] is False
+
+        locked_put_response = client.put(
+            "/admin/secrets/providers.openai.api_key",
+            json={"value": "new-managed-openai-key"},
+        )
+        assert locked_put_response.status_code == 423
+        assert locked_put_response.json()["detail"] == "secret vault is locked"
+
+        unlock_response = client.post(
+            "/admin/secrets/vault/unlock",
+            json={"password": "vault-password"},
+        )
+        assert unlock_response.status_code == 200
+        assert unlock_response.json()["secret_management"]["unlocked"] is True
+
+        unlocked_put_response = client.put(
+            "/admin/secrets/providers.openai.api_key",
+            json={"value": "new-managed-openai-key"},
+        )
+        assert unlocked_put_response.status_code == 200
+
+        updated_registered = client.app.state.registry.get_registered("openai")
+        assert updated_registered.adapter.api_key == "new-managed-openai-key"
+
+
+def test_secret_vault_unlock_rejects_wrong_password(client):
+    setup_response = client.post(
+        "/admin/secrets/vault/setup",
+        json={"password": "correct-password"},
+    )
+    assert setup_response.status_code == 200
+
+    lock_response = client.post("/admin/secrets/vault/lock")
+    assert lock_response.status_code == 200
+
+    unlock_response = client.post(
+        "/admin/secrets/vault/unlock",
+        json={"password": "wrong-password"},
+    )
+    assert unlock_response.status_code == 401
+    assert unlock_response.json()["detail"] == "invalid vault password"
+
+
+def test_admin_uninstall_endpoint_reports_host_side_action(client):
+    response = client.get("/admin/uninstall")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert "Docker" in payload["reason"]
+    assert any(item["label"] == "PowerShell" for item in payload["commands"])
 
 
 def test_admin_health_reports_probe_state_preview_and_recent_activity(client):

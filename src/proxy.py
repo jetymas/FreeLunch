@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
@@ -9,6 +10,7 @@ from typing import cast
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from src.config import Settings
 from src.db import utc_now_iso
 from src.health import (
     get_probe_budget_summary,
@@ -32,6 +34,7 @@ from src.routing import (
     pick_candidates,
 )
 from src.runtime_logging import get_logger, get_runtime_logging_status, runtime_log
+from src.secret_store import SecretStorePasswordError, create_vault_config, unlock_vault
 from src.tokens import estimate_required_tokens, request_contains_vision
 
 logger = get_logger(__name__)
@@ -141,12 +144,124 @@ def _serialize_model_row(row: tuple) -> dict:
 
 def _build_public_model_list(rows: list[tuple[str, str]]) -> list[dict[str, str]]:
     models = [
-        {"id": model_name, "object": "model", "owned_by": provider}
-        for provider, model_name in rows
+        {"id": model_name, "object": "model", "owned_by": provider} for provider, model_name in rows
     ]
     if models:
         models.insert(0, {"id": "auto", "object": "model", "owned_by": "gateway"})
     return models
+
+
+def _secret_slot_status(
+    settings: Settings,
+    *,
+    secret_key: str,
+    label: str,
+    kind: str,
+    env_var: str,
+    managed_secret_rows: dict[str, dict[str, str | None]],
+    configured_in_config: bool = False,
+    provider_id: str | None = None,
+) -> dict[str, object]:
+    managed_row = managed_secret_rows.get(secret_key)
+    source = "missing"
+    configured = False
+    if managed_row is not None:
+        source = "managed"
+        configured = True
+    elif os.getenv(env_var, "").strip():
+        source = "env"
+        configured = True
+    elif configured_in_config:
+        source = "config"
+        configured = True
+    status: dict[str, object] = {
+        "key": secret_key,
+        "label": label,
+        "kind": kind,
+        "env_var": env_var,
+        "configured": configured,
+        "source": source,
+        "managed": managed_row is not None,
+        "updated_at": managed_row.get("updated_at") if managed_row is not None else None,
+    }
+    if provider_id is not None:
+        status["provider_id"] = provider_id
+        status["enabled"] = settings.is_provider_enabled(provider_id)
+        status["discovery_enabled"] = settings.is_provider_discovery_enabled(provider_id)
+        status["inference_enabled"] = settings.is_provider_inference_enabled(provider_id)
+    return status
+
+
+def _list_secret_slots(request: Request) -> list[dict[str, object]]:
+    settings = request.app.state.settings
+    db = request.app.state.db
+    managed_secret_rows = {
+        str(row["key"]): {
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in db.list_managed_secrets()
+    }
+    slots = [
+        _secret_slot_status(
+            settings,
+            secret_key="openrouter_api_key",
+            label="OpenRouter API key",
+            kind="provider",
+            env_var="OPENROUTER_API_KEY",
+            managed_secret_rows=managed_secret_rows,
+            provider_id="openrouter",
+        ),
+    ]
+    for provider_id in settings.supported_provider_ids:
+        if provider_id == "openrouter":
+            continue
+        provider_config = settings.get_provider_bootstrap_config(provider_id)
+        slots.append(
+            _secret_slot_status(
+                settings,
+                secret_key=f"providers.{provider_id}.api_key",
+                label=f"{provider_id} API key",
+                kind="provider",
+                env_var=settings.get_provider_api_key_env(provider_id),
+                managed_secret_rows=managed_secret_rows,
+                configured_in_config=bool(str(provider_config.get("api_key", "")).strip()),
+                provider_id=provider_id,
+            )
+        )
+    return slots
+
+
+def _require_secret_management_unlocked(request: Request):
+    if getattr(request.app.state, "secret_vault_config", None) is None:
+        raise HTTPException(status_code=409, detail="secret vault is not configured")
+    secret_store = getattr(request.app.state, "secret_store", None)
+    if secret_store is None:
+        raise HTTPException(status_code=423, detail="secret vault is locked")
+    return secret_store
+
+
+def _parse_secret_password(payload: dict) -> str:
+    password = str(payload.get("password", "")).strip()
+    if not password:
+        raise HTTPException(status_code=400, detail="vault password cannot be empty")
+    return password
+
+
+def _uninstall_info(settings: Settings) -> dict[str, object]:
+    port = int(settings.gateway_port)
+    return {
+        "available": False,
+        "reason": "FreeLunch runs inside Docker without host-level uninstall control from the web UI.",
+        "admin_ui_url": f"http://localhost:{port}/admin/ui",
+        "commands": [
+            {
+                "label": "PowerShell",
+                "command": "powershell -ExecutionPolicy Bypass -File .\\uninstall.ps1",
+            },
+            {"label": "Shell", "command": "./uninstall.sh"},
+        ],
+    }
 
 
 def _provider_error_status(exc: ProviderError) -> int:
@@ -515,6 +630,7 @@ def build_router() -> APIRouter:
             "probe_state": get_probe_runtime_summary(db, request.app.state.settings),
             "recent_probe_activity": get_recent_probe_activity(db),
             "token_estimation_review": get_token_estimation_review_summary(db),
+            "secret_management": dict(getattr(request.app.state, "secret_management_status", {})),
             "recent_model_errors": [
                 {"model_id": e[0], "last_error": e[1], "consecutive_failures": e[2]} for e in errors
             ],
@@ -534,6 +650,168 @@ def build_router() -> APIRouter:
             "overrides": overrides,
             "effective": request.app.state.settings.public_settings(),
         }
+
+    @router.get("/admin/secrets")
+    async def admin_secrets(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        return {
+            "secret_management": dict(getattr(request.app.state, "secret_management_status", {})),
+            "secrets": _list_secret_slots(request),
+        }
+
+    @router.post("/admin/secrets/vault/setup")
+    async def admin_setup_secret_vault(
+        payload: dict,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        if getattr(request.app.state, "secret_vault_config", None) is not None:
+            raise HTTPException(status_code=409, detail="secret vault is already configured")
+
+        password = _parse_secret_password(payload)
+        db = request.app.state.db
+        try:
+            vault_config, secret_store = create_vault_config(password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        db.set_secret_vault_config(
+            salt_b64=vault_config.salt_b64,
+            verifier_encrypted=vault_config.verifier_encrypted,
+        )
+        db.writer.flush()
+        request.app.state.secret_store = secret_store
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.secret_vault.configured",
+            verbosity="verbose",
+            message="Configured and unlocked secret vault",
+        )
+        return {
+            "status": "configured",
+            "secret_management": dict(getattr(request.app.state, "secret_management_status", {})),
+            "secrets": _list_secret_slots(request),
+        }
+
+    @router.post("/admin/secrets/vault/unlock")
+    async def admin_unlock_secret_vault(
+        payload: dict,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        vault_config = getattr(request.app.state, "secret_vault_config", None)
+        if vault_config is None:
+            raise HTTPException(status_code=409, detail="secret vault is not configured")
+
+        password = _parse_secret_password(payload)
+        try:
+            secret_store = unlock_vault(password, vault_config)
+        except SecretStorePasswordError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+        request.app.state.secret_store = secret_store
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.secret_vault.unlocked",
+            verbosity="verbose",
+            message="Unlocked secret vault",
+        )
+        return {
+            "status": "unlocked",
+            "secret_management": dict(getattr(request.app.state, "secret_management_status", {})),
+            "secrets": _list_secret_slots(request),
+        }
+
+    @router.post("/admin/secrets/vault/lock")
+    async def admin_lock_secret_vault(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        if getattr(request.app.state, "secret_vault_config", None) is None:
+            raise HTTPException(status_code=409, detail="secret vault is not configured")
+
+        request.app.state.secret_store = None
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.secret_vault.locked",
+            verbosity="verbose",
+            message="Locked secret vault",
+        )
+        return {
+            "status": "locked",
+            "secret_management": dict(getattr(request.app.state, "secret_management_status", {})),
+            "secrets": _list_secret_slots(request),
+        }
+
+    @router.put("/admin/secrets/{secret_key:path}")
+    async def admin_set_secret(
+        secret_key: str,
+        payload: dict,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        normalized_key = secret_key.strip()
+        if not Settings.is_managed_secret_key(normalized_key):
+            raise HTTPException(status_code=400, detail="secret key not allowed")
+        if "value" not in payload:
+            raise HTTPException(status_code=400, detail="missing value")
+        value = str(payload["value"]).strip()
+        if not value:
+            raise HTTPException(status_code=400, detail="secret value cannot be empty")
+
+        secret_store = _require_secret_management_unlocked(request)
+        db = request.app.state.db
+        db.set_managed_secret(normalized_key, secret_store.encrypt(value))
+        db.writer.flush()
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.secret.updated",
+            verbosity="verbose",
+            message="Updated managed secret",
+            key=normalized_key,
+        )
+        return {"status": "updated", "key": normalized_key, "secrets": _list_secret_slots(request)}
+
+    @router.delete("/admin/secrets/{secret_key:path}")
+    async def admin_delete_secret(
+        secret_key: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        normalized_key = secret_key.strip()
+        if not Settings.is_managed_secret_key(normalized_key):
+            raise HTTPException(status_code=400, detail="secret key not allowed")
+
+        _require_secret_management_unlocked(request)
+        db = request.app.state.db
+        db.delete_managed_secret(normalized_key)
+        db.writer.flush()
+        request.app.state.reload_settings()
+        runtime_log(
+            logger,
+            "admin.secret.deleted",
+            verbosity="verbose",
+            message="Deleted managed secret",
+            key=normalized_key,
+        )
+        return {"status": "deleted", "key": normalized_key, "secrets": _list_secret_slots(request)}
+
+    @router.get("/admin/uninstall")
+    async def admin_uninstall_info(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> dict:
+        _check_gateway_auth(request, authorization)
+        return _uninstall_info(request.app.state.settings)
 
     @router.put("/admin/config/{key:path}")
     async def admin_set_config(

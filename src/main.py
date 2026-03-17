@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 
+from src.admin_ui import build_admin_ui_router
 from src.config import Settings
 from src.db import Database
 from src.providers.registry import ProviderRegistry
@@ -18,6 +19,7 @@ from src.runtime_logging import (
     shutdown_runtime_logging,
 )
 from src.scheduler import build_scheduler, register_jobs, run_discovery_pipeline
+from src.secret_store import ManagedSecretStore, SecretVaultConfig
 from src.tokens import shutdown_tokenizer_preloads
 
 logger = get_logger(__name__)
@@ -56,6 +58,39 @@ def _configure_runtime_logger(settings: Settings) -> None:
     )
 
 
+def _get_secret_vault_config(db: Database) -> SecretVaultConfig | None:
+    row = db.get_secret_vault_config()
+    if row is None:
+        return None
+    return SecretVaultConfig(
+        salt_b64=str(row["salt_b64"]),
+        verifier_encrypted=str(row["verifier_encrypted"]),
+    )
+
+
+def _load_managed_secrets(
+    db: Database,
+    *,
+    secret_store: ManagedSecretStore | None,
+    vault_config: SecretVaultConfig | None,
+) -> tuple[dict[str, str], dict[str, object]]:
+    encrypted = db.get_managed_secret_values()
+    status: dict[str, object] = {
+        "configured": vault_config is not None,
+        "unlocked": secret_store is not None,
+        "stored_secret_count": len(encrypted),
+        "loaded_secret_count": 0,
+        "decrypt_failures": [],
+    }
+    if secret_store is None:
+        return {}, status
+
+    secrets, failures = secret_store.decrypt_mapping(encrypted)
+    status["loaded_secret_count"] = len(secrets)
+    status["decrypt_failures"] = failures
+    return secrets, status
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.from_env()
@@ -76,6 +111,14 @@ async def lifespan(app: FastAPI):
     db.writer.start()
 
     settings.apply_overrides(db.get_overrides())
+    secret_vault_config = _get_secret_vault_config(db)
+    secret_store = None
+    managed_secrets, secret_status = _load_managed_secrets(
+        db,
+        secret_store=secret_store,
+        vault_config=secret_vault_config,
+    )
+    settings.apply_managed_secrets(managed_secrets)
     _configure_database_logging(settings, db)
 
     registry = ProviderRegistry()
@@ -84,6 +127,9 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     app.state.registry = registry
     app.state.settings = settings
+    app.state.secret_vault_config = secret_vault_config
+    app.state.secret_store = secret_store
+    app.state.secret_management_status = secret_status
     app.state.scheduler = build_scheduler()
     app.state.ready = False
     app.state.force_discovery = False
@@ -152,10 +198,21 @@ async def lifespan(app: FastAPI):
     def reload_settings() -> Settings:
         new_settings = Settings.from_env()
         new_settings.apply_overrides(db.get_overrides())
+        new_secret_vault_config = _get_secret_vault_config(db)
+        new_secret_store = getattr(app.state, "secret_store", None)
+        managed_secrets, secret_status = _load_managed_secrets(
+            db,
+            secret_store=new_secret_store,
+            vault_config=new_secret_vault_config,
+        )
+        new_settings.apply_managed_secrets(managed_secrets)
         _configure_runtime_logger(new_settings)
         _configure_registry(new_settings, registry)
         _configure_database_logging(new_settings, db)
         app.state.settings = new_settings
+        app.state.secret_vault_config = new_secret_vault_config
+        app.state.secret_store = new_secret_store
+        app.state.secret_management_status = secret_status
         apply_provider_runtime_state(new_settings)
         discovery_job = app.state.scheduler.get_job("discovery")
         if discovery_job is not None:
@@ -270,5 +327,6 @@ async def lifespan(app: FastAPI):
         shutdown_runtime_logging()
 
 
-app = FastAPI(title="FreeLunch", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="FreeLunch", version="0.4.0", lifespan=lifespan)
 app.include_router(build_router())
+app.include_router(build_admin_ui_router())

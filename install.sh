@@ -7,6 +7,9 @@ IMAGE="${FREELUNCH_IMAGE:-ghcr.io/${REPO_LOWER}:latest}"
 INSTALL_DIR="${FREELUNCH_INSTALL_DIR:-${HOME}/.freelunch}"
 DEFAULT_PORT="${FREELUNCH_PORT:-8000}"
 SKIP_PULL="${FREELUNCH_SKIP_PULL:-}"
+CREATE_ADMIN_SHORTCUT_RESPONSE=""
+ADMIN_UI_SHORTCUT_PATH=""
+GATEWAY_PORT=""
 
 info() {
     printf '[INFO] %s\n' "$1"
@@ -56,6 +59,95 @@ require_docker() {
     docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required."
 }
 
+sync_port_from_env() {
+    if [ ! -f "${INSTALL_DIR}/.env" ]; then
+        GATEWAY_PORT="$DEFAULT_PORT"
+        return
+    fi
+
+    port="$(awk -F= '/^FREELUNCH_PORT=/{print $2}' "${INSTALL_DIR}/.env" | tail -n 1)"
+    if [ -z "$port" ]; then
+        port="$DEFAULT_PORT"
+    fi
+    GATEWAY_PORT="$port"
+}
+
+should_create_shortcut() {
+    case "${CREATE_ADMIN_SHORTCUT_RESPONSE:-}" in
+        1|y|Y|yes|YES|true|TRUE|on|ON)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+determine_shortcut_preference() {
+    if [ -n "${CREATE_ADMIN_SHORTCUT_RESPONSE:-}" ]; then
+        return
+    fi
+    CREATE_ADMIN_SHORTCUT_RESPONSE="$(prompt "Create Admin UI desktop shortcut?" "yes" "FREELUNCH_CREATE_ADMIN_SHORTCUT")"
+}
+
+detect_desktop_dir() {
+    dir=""
+    if command -v xdg-user-dir >/dev/null 2>&1; then
+        dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+    fi
+    if [ -z "$dir" ]; then
+        dir="${HOME}/Desktop"
+    fi
+    if [ -n "$dir" ] && [ ! -d "$dir" ]; then
+        mkdir -p "$dir" 2>/dev/null || true
+    fi
+    if [ -d "$dir" ]; then
+        printf '%s' "$dir"
+    fi
+}
+
+create_admin_shortcut() {
+    if ! should_create_shortcut; then
+        return
+    fi
+
+    if [ -z "$GATEWAY_PORT" ]; then
+        sync_port_from_env
+    fi
+
+    desktop_dir="$(detect_desktop_dir)"
+    if [ -z "$desktop_dir" ]; then
+        warn "Desktop directory not found; skipping Admin UI shortcut creation."
+        return
+    fi
+
+    url="http://localhost:${GATEWAY_PORT:-$DEFAULT_PORT}/admin/ui"
+    os_type="$(uname -s)"
+    case "$os_type" in
+        Darwin)
+            path="${desktop_dir}/FreeLunch Admin UI.command"
+            cat > "$path" <<EOF
+#!/usr/bin/env sh
+open "$url"
+EOF
+            chmod +x "$path"
+            ;;
+        *)
+            path="${desktop_dir}/FreeLunch Admin UI.desktop"
+            cat > "$path" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=FreeLunch Admin UI
+Comment=Open the FreeLunch Admin UI
+Exec=xdg-open "$url"
+Terminal=false
+EOF
+            chmod +x "$path"
+            ;;
+    esac
+    ADMIN_UI_SHORTCUT_PATH="$path"
+    info "Created Admin UI shortcut at $path"
+}
+
 setup_install_dir() {
     UPGRADING=0
     if [ -f "${INSTALL_DIR}/.env" ]; then
@@ -86,6 +178,7 @@ write_env_file() {
     [ -n "$openrouter_key" ] || fail "OPENROUTER_API_KEY is required."
     gateway_key="$(prompt "Gateway API key (leave blank to disable auth)" "" "GATEWAY_API_KEY")"
     gateway_port="$(prompt "Gateway port" "$DEFAULT_PORT" "FREELUNCH_PORT")"
+    GATEWAY_PORT="$gateway_port"
 
     cat > "${INSTALL_DIR}/.env" <<EOF
 OPENROUTER_API_KEY=${openrouter_key}
@@ -188,25 +281,36 @@ run_install() {
 }
 
 print_summary() {
-    port="$(awk -F= '/^FREELUNCH_PORT=/{print $2}' "${INSTALL_DIR}/.env" | tail -n 1)"
-    if [ -z "$port" ]; then
-        port="$DEFAULT_PORT"
+    if [ -n "$GATEWAY_PORT" ]; then
+        port="$GATEWAY_PORT"
+    else
+        port="$(awk -F= '/^FREELUNCH_PORT=/{print $2}' "${INSTALL_DIR}/.env" | tail -n 1)"
+        if [ -z "$port" ]; then
+            port="$DEFAULT_PORT"
+        fi
     fi
 
     printf '\nFreeLunch installed.\n'
     printf 'Gateway URL: http://localhost:%s/v1\n' "$port"
+    printf 'Admin UI: http://localhost:%s/admin/ui\n' "$port"
     printf 'Health check: http://localhost:%s/healthz\n' "$port"
     printf 'Install dir: %s\n' "$INSTALL_DIR"
     printf 'Logs: docker compose --project-directory "%s" -f "%s/docker-compose.yml" logs -f\n' "$INSTALL_DIR" "$INSTALL_DIR"
     printf 'Stop: docker compose --project-directory "%s" -f "%s/docker-compose.yml" down\n' "$INSTALL_DIR" "$INSTALL_DIR"
     printf 'Uninstall: sh uninstall.sh\n'
+    if [ -n "$ADMIN_UI_SHORTCUT_PATH" ]; then
+        printf 'Desktop shortcut: %s\n' "$ADMIN_UI_SHORTCUT_PATH"
+    fi
 }
 
 info "Installing FreeLunch from ${IMAGE}"
 require_docker
 setup_install_dir
 write_env_file
+sync_port_from_env
+determine_shortcut_preference
 write_config_file
 write_compose_file
 run_install
+create_admin_shortcut
 print_summary

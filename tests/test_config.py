@@ -233,3 +233,40 @@ def test_settings_coercion_helpers_and_env_bool(monkeypatch):
     assert Settings._env_bool("TEST_SETTINGS_BOOL", False) is True
     monkeypatch.setenv("TEST_SETTINGS_BOOL", "false")
     assert Settings._env_bool("TEST_SETTINGS_BOOL", True) is False
+
+
+def test_settings_apply_managed_secrets_updates_provider_keys():
+    settings = Settings(
+        providers_enabled=("openrouter", "openai"),
+        provider_enabled={"openrouter": True, "openai": True},
+        provider_discovery_enabled={"openrouter": True, "openai": True},
+        provider_inference_enabled={"openrouter": True, "openai": True},
+        provider_bootstrap_config={
+            "openai": {"api_key_env": "OPENAI_API_KEY", "api_key": "config-key"}
+        },
+    )
+
+    settings.apply_managed_secrets(
+        {
+            "openrouter_api_key": "openrouter-secret",
+            "providers.openai.api_key": "managed-openai-secret",
+        }
+    )
+
+    assert settings.openrouter_api_key == "openrouter-secret"
+    assert settings.get_provider_bootstrap_config("openai")["api_key"] == "managed-openai-secret"
+
+
+def test_settings_reports_provider_api_key_env_and_managed_secret_keys():
+    settings = Settings(
+        providers_enabled=("openai",),
+        provider_enabled={"openai": True},
+        provider_discovery_enabled={"openai": True},
+        provider_inference_enabled={"openai": True},
+        provider_bootstrap_config={"openai": {"api_key_env": "OPENAI_CUSTOM_KEY"}},
+    )
+
+    assert settings.get_provider_api_key_env("openai") == "OPENAI_CUSTOM_KEY"
+    assert Settings.is_managed_secret_key("openrouter_api_key") is True
+    assert Settings.is_managed_secret_key("providers.openai.api_key") is True
+    assert Settings.is_managed_secret_key("providers.notreal.api_key") is False

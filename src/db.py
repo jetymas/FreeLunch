@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 8
 DEFAULT_LOW_PRIORITY_LOG_QUEUE_SIZE = 5000
 HIGH_PRIORITY_QUEUE_RESERVE = 256
 
@@ -109,6 +109,21 @@ def _create_base_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS config_overrides (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS managed_secrets (
+            key TEXT PRIMARY KEY,
+            value_encrypted TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS secret_vault_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            salt_b64 TEXT NOT NULL,
+            verifier_encrypted TEXT NOT NULL,
+            created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
         """
@@ -219,6 +234,33 @@ def migrate_to_v6(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_to_v7(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_secrets (
+            key TEXT PRIMARY KEY,
+            value_encrypted TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def migrate_to_v8(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS secret_vault_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            salt_b64 TEXT NOT NULL,
+            verifier_encrypted TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, migrate_to_v1),
     (2, migrate_to_v2),
@@ -226,6 +268,8 @@ MIGRATIONS: list[tuple[int, Any]] = [
     (4, migrate_to_v4),
     (5, migrate_to_v5),
     (6, migrate_to_v6),
+    (7, migrate_to_v7),
+    (8, migrate_to_v8),
 ]
 
 
@@ -433,6 +477,62 @@ class Database:
 
     def delete_override(self, key: str) -> None:
         self.writer.enqueue("DELETE FROM config_overrides WHERE key=?", (key,))
+
+    def get_managed_secret_values(self) -> dict[str, str]:
+        with self.read_conn() as conn:
+            rows = conn.execute("SELECT key, value_encrypted FROM managed_secrets").fetchall()
+        return {str(row["key"]): str(row["value_encrypted"]) for row in rows}
+
+    def list_managed_secrets(self) -> list[sqlite3.Row]:
+        with self.read_conn() as conn:
+            return conn.execute(
+                """
+                SELECT key, created_at, updated_at
+                FROM managed_secrets
+                ORDER BY key
+                """
+            ).fetchall()
+
+    def set_managed_secret(self, key: str, value_encrypted: str) -> None:
+        now = utc_now_iso()
+        self.writer.enqueue(
+            """
+            INSERT INTO managed_secrets(key, value_encrypted, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_encrypted=excluded.value_encrypted,
+                updated_at=excluded.updated_at
+            """,
+            (key, value_encrypted, now, now),
+        )
+
+    def delete_managed_secret(self, key: str) -> None:
+        self.writer.enqueue("DELETE FROM managed_secrets WHERE key=?", (key,))
+
+    def get_secret_vault_config(self) -> sqlite3.Row | None:
+        with self.read_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT salt_b64, verifier_encrypted, created_at, updated_at
+                FROM secret_vault_config
+                WHERE id=1
+                """
+            ).fetchone()
+        return cast(sqlite3.Row | None, row)
+
+    def set_secret_vault_config(self, *, salt_b64: str, verifier_encrypted: str) -> None:
+        now = utc_now_iso()
+        self.writer.enqueue(
+            """
+            INSERT INTO secret_vault_config(id, salt_b64, verifier_encrypted, created_at, updated_at)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                salt_b64=excluded.salt_b64,
+                verifier_encrypted=excluded.verifier_encrypted,
+                updated_at=excluded.updated_at
+            """,
+            (salt_b64, verifier_encrypted, now, now),
+        )
 
     def configure_logging(self, *, request_log_enabled: bool, request_log_queue_size: int) -> None:
         self.writer.set_low_priority_log_policy(

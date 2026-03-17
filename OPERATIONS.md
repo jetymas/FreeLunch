@@ -54,7 +54,7 @@ Important development distinction:
 
 Before considering a deployment healthy:
 
-1. Configure at least one real provider API key (`OPENROUTER_API_KEY` or provider-specific key env selected via `providers.<id>.api_key_env`).
+1. Configure at least one real provider API key (`OPENROUTER_API_KEY`, a provider-specific env key, or a managed secret through the unlocked vault at `/admin/secrets` / `/admin/ui`).
 2. Keep `providers.openrouter.dev_stub_enabled: false` for production.
 3. Confirm `/healthz` returns `200`.
 4. Confirm `/readyz` returns `200`.
@@ -148,6 +148,8 @@ Key sections:
   - recent probe/bootstrap request telemetry
 - `token_estimation_review`
   - evidence-driven summary for token-estimation accuracy
+- `secret_management`
+  - vault configured/unlocked state, stored secret count, and decrypt-failure summary
 
 ### 6.3 `/admin/config`
 
@@ -158,6 +160,28 @@ Use to inspect effective config and DB-backed overrides.
 Use for durable request telemetry review.
 
 This endpoint reflects `request_log`, not the process runtime logger.
+
+### 6.5 `/admin/secrets`
+
+Use to inspect and manage encrypted provider secrets stored in SQLite.
+
+Operational notes:
+
+- configure the vault first with `POST /admin/secrets/vault/setup` or the Admin UI, then unlock it with the runtime password when needed
+- responses never return raw secret values
+- secret updates trigger runtime reload so provider bootstrap picks up the new value immediately
+- if `GATEWAY_API_KEY` is unset, admin endpoints (including secrets) remain unauthenticated; do not expose that configuration outside a trusted local environment
+
+### 6.6 `/admin/ui`
+
+Use for a lightweight operator console over the existing admin APIs.
+
+Notes:
+
+- the page is static HTML/CSS/JS served by the app
+- it prompts for the bearer token client-side and sends it with `fetch`
+- it includes a dark-mode vault workflow for creating/unlocking the runtime password vault plus host-side uninstall guidance
+- it is suitable for single-node/local-first operations, not a multi-user admin portal
 
 ## 7. Logging Model
 

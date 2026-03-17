@@ -11,6 +11,17 @@ import yaml
 
 @dataclass(slots=True)
 class Settings:
+    PROVIDER_DEFAULT_API_KEY_ENVS: ClassVar[dict[str, str]] = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "together": "TOGETHER_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+        "xai": "XAI_API_KEY",
+        "cerebras": "CEREBRAS_API_KEY",
+        "perplexity": "PERPLEXITY_API_KEY",
+        "nvidia": "NVIDIA_API_KEY",
+    }
     OVERRIDABLE_KEYS: ClassVar[set[str]] = {
         "discovery.interval_minutes",
         "ranking.interval_minutes",
@@ -371,6 +382,12 @@ class Settings:
         provider_ids.add("openrouter")
         return tuple(sorted(str(provider_id) for provider_id in provider_ids if str(provider_id)))
 
+    @property
+    def supported_provider_ids(self) -> tuple[str, ...]:
+        provider_ids = set(self.PROVIDER_DEFAULT_API_KEY_ENVS)
+        provider_ids.update(self.known_provider_ids)
+        return tuple(sorted(provider_id for provider_id in provider_ids if provider_id))
+
     def is_provider_enabled(self, provider_id: str) -> bool:
         normalized = provider_id.strip()
         if not normalized:
@@ -406,6 +423,28 @@ class Settings:
         if not normalized:
             return {}
         return dict(self.provider_bootstrap_config.get(normalized, {}))
+
+    def get_provider_api_key_env(self, provider_id: str) -> str:
+        normalized = provider_id.strip()
+        if not normalized:
+            return "API_KEY"
+        configured = self.get_provider_bootstrap_config(normalized)
+        default_env = self.PROVIDER_DEFAULT_API_KEY_ENVS.get(normalized, "API_KEY")
+        return str(configured.get("api_key_env", default_env)).strip() or default_env
+
+    def apply_managed_secrets(self, secrets: Mapping[str, str]) -> None:
+        openrouter_api_key = secrets.get("openrouter_api_key")
+        if openrouter_api_key is not None:
+            self.openrouter_api_key = openrouter_api_key
+
+        for provider_id in self.supported_provider_ids:
+            if provider_id == "openrouter":
+                continue
+            secret_key = f"providers.{provider_id}.api_key"
+            if secret_key not in secrets:
+                continue
+            provider_config = self.provider_bootstrap_config.setdefault(provider_id, {})
+            provider_config["api_key"] = secrets[secret_key]
 
     @classmethod
     def _coerce_float_mapping(cls, value: Any) -> dict[str, float]:
@@ -471,6 +510,22 @@ class Settings:
             return None
         provider_id = key[len(prefix) :].strip()
         return provider_id or None
+
+    @classmethod
+    def _provider_from_managed_secret_key(cls, key: str) -> str | None:
+        prefix = "providers."
+        suffix = ".api_key"
+        if not key.startswith(prefix) or not key.endswith(suffix):
+            return None
+        provider_id = key[len(prefix) : len(key) - len(suffix)].strip()
+        return provider_id or None
+
+    @classmethod
+    def is_managed_secret_key(cls, key: str) -> bool:
+        if key == "openrouter_api_key":
+            return True
+        provider_id = cls._provider_from_managed_secret_key(key)
+        return bool(provider_id and provider_id in cls.PROVIDER_DEFAULT_API_KEY_ENVS)
 
     @staticmethod
     def _env_bool(name: str, default: Any) -> bool:
