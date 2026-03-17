@@ -193,6 +193,14 @@ function Determine-ShortcutPreference {
     if ($script:CreateShortcutResponse) {
         return
     }
+    if ($env:FREELUNCH_CREATE_ADMIN_SHORTCUT) {
+        $script:CreateShortcutResponse = $env:FREELUNCH_CREATE_ADMIN_SHORTCUT
+        return
+    }
+    if ($env:FREELUNCH_AUTO_CONFIRM) {
+        $script:CreateShortcutResponse = "yes"
+        return
+    }
     $script:CreateShortcutResponse = Read-Value "Create Admin UI desktop shortcut?" "yes" "FREELUNCH_CREATE_ADMIN_SHORTCUT"
 }
 

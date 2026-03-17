@@ -85,6 +85,14 @@ determine_shortcut_preference() {
     if [ -n "${CREATE_ADMIN_SHORTCUT_RESPONSE:-}" ]; then
         return
     fi
+    if [ -n "${FREELUNCH_CREATE_ADMIN_SHORTCUT:-}" ]; then
+        CREATE_ADMIN_SHORTCUT_RESPONSE="${FREELUNCH_CREATE_ADMIN_SHORTCUT}"
+        return
+    fi
+    if [ -n "${FREELUNCH_AUTO_CONFIRM:-}" ]; then
+        CREATE_ADMIN_SHORTCUT_RESPONSE="yes"
+        return
+    fi
     CREATE_ADMIN_SHORTCUT_RESPONSE="$(prompt "Create Admin UI desktop shortcut?" "yes" "FREELUNCH_CREATE_ADMIN_SHORTCUT")"
 }
 
