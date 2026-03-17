@@ -139,6 +139,16 @@ def _serialize_model_row(row: tuple) -> dict:
     }
 
 
+def _build_public_model_list(rows: list[tuple[str, str]]) -> list[dict[str, str]]:
+    models = [
+        {"id": model_name, "object": "model", "owned_by": provider}
+        for provider, model_name in rows
+    ]
+    if models:
+        models.insert(0, {"id": "auto", "object": "model", "owned_by": "gateway"})
+    return models
+
+
 def _provider_error_status(exc: ProviderError) -> int:
     if exc.category == "AUTH_ERROR":
         return exc.status_code or 401
@@ -374,13 +384,7 @@ def build_router() -> APIRouter:
             rows = conn.execute(
                 "SELECT provider_id, provider_model_id FROM models WHERE is_healthy=1 AND is_active=1 ORDER BY composite_score DESC"
             ).fetchall()
-        return {
-            "object": "list",
-            "data": [
-                {"id": model_name, "object": "model", "owned_by": provider}
-                for provider, model_name in rows
-            ],
-        }
+        return {"object": "list", "data": _build_public_model_list(rows)}
 
     @router.get("/admin/models")
     async def admin_models(

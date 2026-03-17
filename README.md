@@ -516,6 +516,7 @@ Typical client configuration:
 - API key: your `GATEWAY_API_KEY` if gateway auth is enabled
 
 If a client insists on a key even when gateway auth is disabled, a placeholder usually works.
+`GET /v1/models` also includes a synthetic `auto` entry for strict OpenAI-compatible clients that validate model names before sending requests.
 
 ### Python OpenAI SDK example
 

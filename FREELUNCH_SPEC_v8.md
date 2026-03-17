@@ -338,6 +338,7 @@ Fields:
 
 - `GET /v1/models`
   - returns normalized active model list in OpenAI-style format
+  - includes a synthetic `auto` alias when the gateway has an active healthy model pool
 
 ### 6.3 Chat Completions
 

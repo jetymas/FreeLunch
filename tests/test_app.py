@@ -86,7 +86,8 @@ def test_models_endpoint(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["object"] == "list"
-    assert len(payload["data"]) >= 1
+    assert payload["data"][0] == {"id": "auto", "object": "model", "owned_by": "gateway"}
+    assert len(payload["data"]) >= 2
 
 
 def test_chat_completion_streaming(client):
