@@ -394,6 +394,6 @@ async def lifespan(app: FastAPI):
         shutdown_runtime_logging()
 
 
-app = FastAPI(title="FreeLunch", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="FreeLunch", version="0.4.2", lifespan=lifespan)
 app.include_router(build_router())
 app.include_router(build_admin_ui_router())
