@@ -4,19 +4,17 @@ This file gives repo-specific guidance to coding agents working in `FreeLunch`.
 
 ## Start Here
 
-Read these files first, in this order:
+Read these files first:
 
-1. `FREELUNCH_SPEC_v8.md`
-2. `SPEC_GAP_REVIEW.md`
-3. `TASKS.md`
-4. `README.md`
-5. `TESTING.md`
-6. `RELEASE_VALIDATION_MATRIX.md`
-7. `IMPLEMENTATION_GUIDE.md`
-8. `OPERATIONS.md`
-9. `CONTRIBUTING.md`
+1. `README.md` for user-facing setup and behavior
+2. `docs/architecture.md` for boundaries and invariants
+3. `docs/operations.md` for deployment and operator behavior
+4. `docs/roadmap.md` for open work and acceptance criteria
+5. `CONTRIBUTING.md` for development and validation workflow
 
-The spec is the target. The gap review is the current alignment snapshot. The task list is the actionable backlog.
+Use source code, `config.yaml.example`, `pyproject.toml`, and workflow files as
+the authority for enumerations and implementation details. Git history retains
+superseded plans and release evidence; do not treat those as current contracts.
 
 ## Repo Priorities
 
@@ -24,8 +22,11 @@ The spec is the target. The gap review is the current alignment snapshot. The ta
 - Prefer simple, low-overhead designs. This project explicitly values single-node reliability over clever concurrency.
 - Treat SQLite carefully. All writes go through the writer thread in `src/db.py`.
 - Keep timestamps canonical: UTC ISO 8601 with a `Z` suffix.
-- If behavior diverges from the spec, update `SPEC_GAP_REVIEW.md` and `TASKS.md` in the same change.
-- Treat `OPERATIONS.md` as the operator-facing source of truth for deployment, admin endpoints, logging interpretation, and live validation guidance.
+- If behavior changes, update the relevant living document (`README.md`,
+  `docs/architecture.md`, `docs/operations.md`, or `docs/roadmap.md`) in the
+  same change.
+- Treat `docs/operations.md` as the operator-facing source of truth for
+  deployment, admin endpoints, logging interpretation, and live validation.
 - Active mission: harden and maintain the now-landed multi-provider platformization baseline.
 
 ## Current Code Map
@@ -60,6 +61,7 @@ Run the smallest command set that proves your change:
 ```bash
 python -m ruff check .
 python -m mypy src
+python scripts/generate_architecture.py --check
 python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
 python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
 ```
@@ -82,7 +84,8 @@ Release rule: push to `main`, wait for `main` CI to pass, and only then create/p
 Notes:
 
 - Repo-wide Ruff is configured to ignore vendored local dependency folders such as `.pydeps`.
-- Latest validated baseline is `418 passed` with `97.68%` total `src/` coverage; CI still enforces an 80% floor, so keep local/full-wave coverage checks in the workflow.
+- The coverage floor is defined in `pyproject.toml`; do not copy transient test
+  counts or coverage snapshots into living documentation.
 - Python 3.14 test runs intentionally apply narrowly scoped third-party warning filters in `pyproject.toml` for known upstream asyncio deprecations in `fastapi.routing` and `pytest_asyncio.plugin`; do not broaden those filters without justification.
 - Pytest now sets `norecursedirs` for transient temp paths (`.pytest_tmp*`, `pytest_tmp*`, `pytest-cache-files-*`, `tests/tmp_*`) to avoid accidental local artifact collection failures.
 
@@ -92,7 +95,8 @@ Use parallel agents only when file ownership is clearly separable. The main inte
 
 ### Recommended current split
 
-Current phase: testing-depth hardening after hitting the 97% coverage target
+Current phase: maintain the single-node platform while evaluating optional
+classification and native deployment improvements.
 
 Phase A: safe to run in parallel
 
@@ -105,9 +109,9 @@ Phase A: safe to run in parallel
 - Agent `stress-concurrency-tests`
   Ownership: `tests/test_stress_concurrency.py`
   Current target: probe budget and tokenizer-preload de-dup invariants under concurrent execution
-- Agent `docs-coordinator`
-  Ownership: `FREELUNCH_SPEC_v8.md`, `SPEC_GAP_REVIEW.md`, `TASKS.md`, `AGENTS.md`, relevant README/OPERATIONS sections
-  Current target: keep testing roadmap/spec-gap/task state aligned with landed validation evidence
+- Documentation work should have one owner per living document. Keep
+  `README.md`, `docs/architecture.md`, `docs/operations.md`, and
+  `docs/roadmap.md` synchronized with the code they describe.
 
 Phase B: run after Phase A lands or when those files are idle
 
@@ -120,7 +124,7 @@ Do not run `stress-concurrency-tests` concurrently with other workers editing `t
 ### Ownership rules
 
 - Assign one owner per file. If a task touches `src/config.py`, `src/main.py`, `src/db.py`, or `src/proxy.py`, treat it as high-conflict work.
-- Treat `TASKS.md`, `SPEC_GAP_REVIEW.md`, `CHANGELOG.md`, and `AGENTS.md` as coordinator-owned files by default.
+- Treat `CHANGELOG.md` and `AGENTS.md` as coordinator-owned files by default.
 - Worker agents should report required doc updates, but the coordinating agent should usually apply the shared tracking-doc edits to avoid merge churn.
 - If two tasks both need `README.md`, split by section only if the coordinator is explicitly managing the merge.
 
@@ -129,7 +133,7 @@ Do not run `stress-concurrency-tests` concurrently with other workers editing `t
 1. Spawn only agents whose ownership does not overlap.
 2. Let each worker finish code and task-local tests first.
 3. Integrate one worker at a time into shared docs and final validation.
-4. Re-check `TASKS.md` after each merge before spawning the next wave; the backlog is now small enough that the optimal split changes quickly.
+4. Re-check the relevant roadmap item after each merge before spawning the next wave.
 
 ### Worker handoff format
 
@@ -139,7 +143,7 @@ Each worker should report:
 - tests run
 - unresolved risks
 - exact doc impacts
-- whether `TASKS.md` / `SPEC_GAP_REVIEW.md` should change
+- which living document should change, if any
 
 If a worker hits a blocker, it should stop, document the blocker clearly, and release ownership of untouched files so another worker can proceed.
 
@@ -227,21 +231,18 @@ If a worker hits a blocker, it should stop, document the blocker clearly, and re
 
 - Do not add provider-specific conditionals to `src/routing.py`, `src/health.py`, or `src/proxy.py`.
 - Do not bypass the DB writer thread for application writes.
-- Do not assume the spec gap document is current; verify against code before editing it.
+- Verify behavior against code and tests before documenting it.
 - Do not lint or typecheck vendored dependency trees as if they were project code.
-- Do not let docs drift after spec-facing changes; update the gap review and task list when needed.
+- Do not let docs drift after behavior changes; update the one authoritative
+  living document and link to source/config instead of copying inventories.
 
 ## Useful Resources
 
-- Spec target: `FREELUNCH_SPEC_v8.md`
-- Current alignment snapshot: `SPEC_GAP_REVIEW.md`
-- Active backlog: `TASKS.md`
-- Testing strategy: `TESTING.md`
-- Release sign-off matrix: `RELEASE_VALIDATION_MATRIX.md`
-- Release sign-off evidence: `RELEASE_VALIDATION_EVIDENCE.md`
+- Architecture and source links: `docs/architecture.md`
+- Operator runbook: `docs/operations.md`
+- Open work and decisions: `docs/roadmap.md`
 - Dev workflow: `CONTRIBUTING.md`
 - Runtime defaults: `config.yaml.example`, `.env.example`
-- Operator runbook: `OPERATIONS.md`
 - Manual live-provider smoke harness: `scripts/provider_smoke.py`
 - Behavior examples: `tests/test_api.py`, `tests/test_app.py`, `tests/test_health.py`, `tests/test_routing.py`
 - Property/stress examples: `tests/test_property_routing.py`, `tests/test_property_tokens.py`, `tests/test_stress_concurrency.py`

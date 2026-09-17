@@ -1,297 +1,162 @@
 # Contributing
 
-## Start with the repo state, not assumptions
+Start with the current code and the three living design documents:
 
-Read these in order before making larger changes:
+1. [`README.md`](./README.md) for user-facing behavior and setup;
+2. [`docs/architecture.md`](./docs/architecture.md) for boundaries and invariants;
+3. [`docs/operations.md`](./docs/operations.md) for deployment and operator behavior;
+4. [`docs/roadmap.md`](./docs/roadmap.md) for open work and acceptance criteria.
 
-1. `FREELUNCH_SPEC_v8.md`
-2. `SPEC_GAP_REVIEW.md`
-3. `TASKS.md`
-4. `README.md`
-5. `TESTING.md`
-6. `RELEASE_VALIDATION_MATRIX.md`
-7. `RELEASE_VALIDATION_EVIDENCE.md`
-8. `IMPLEMENTATION_GUIDE.md`
-9. `AGENTS.md`
-
-Use them together:
-
-- `FREELUNCH_SPEC_v8.md` is the full target behavior
-- `SPEC_GAP_REVIEW.md` is the current implementation-vs-spec snapshot
-- `TASKS.md` is the active backlog
-- `README.md` is the user-facing onboarding guide
-- `TESTING.md` is the canonical testing strategy and validation roadmap
-- `RELEASE_VALIDATION_MATRIX.md` is the manual release sign-off checklist/evidence template
-- `RELEASE_VALIDATION_EVIDENCE.md` is the execution ledger for matrix runs and blockers
-- `IMPLEMENTATION_GUIDE.md` is the technical implementation reference
-- `AGENTS.md` is the repo-specific engineering ruleset
+Do not treat old implementation plans or release ledgers as current contracts.
+When a change needs historical context, inspect Git history. Keep one source of
+truth for each topic and link to code/config/workflows instead of copying
+enumerations into prose.
 
 ## Project principles
 
-FreeLunch is deliberately conservative. Preserve that bias.
+FreeLunch is deliberately conservative:
 
 - Keep provider-specific behavior inside `src/providers/*`.
 - Keep routing, health, and proxy orchestration provider-agnostic.
 - Treat SQLite as a single-node system with one authoritative writer path.
-- Prefer clear, low-overhead designs over abstraction sprawl or concurrency-heavy cleverness.
-- Keep timestamps canonical: UTC ISO 8601 with a `Z` suffix.
-- If behavior changes relative to the spec, update the docs in the same branch.
+- Prefer clear, low-overhead designs over abstraction sprawl or concurrency-heavy
+  cleverness.
+- Keep persisted timestamps as UTC ISO 8601 with a `Z` suffix.
+- Preserve hard request constraints even when adding ranking or classification
+  behavior.
 
-## Local development setup
+## Local development
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env
+cp config.yaml.example config.yaml
 uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-If you want local env defaults:
+The native path does not require Docker. Docker remains useful for integration,
+packaging, and installer validation.
 
-```bash
-cp .env.example .env
-cp config.yaml.example config.yaml
-```
+## Validation
 
-## Validation commands
-
-Minimum common validation:
+Run the smallest relevant checks while iterating, then the full local gate:
 
 ```bash
 python -m ruff check .
 python -m mypy src
+python scripts/generate_architecture.py --check
 python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
 python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
 ```
 
-Agents and contributors should treat the commands above as the default local push gate. Do not push code changes until that local gate is green.
-
-Python 3.14 warning-hygiene baseline for contributors:
-
-- `fastapi==0.115.14`
-- `starlette==0.46.2`
-- `pytest==8.4.2`
-- `pytest-asyncio==0.26.0`
-
-Remaining upstream deprecation noise is filtered narrowly via `pyproject.toml` (`tool.pytest.ini_options.filterwarnings`) for known warnings emitted by `fastapi.routing` and `pytest_asyncio.plugin`; keep this list minimal and targeted.
-
-Focused validation is preferred while you iterate. Run the smallest meaningful test set first, then broaden only as needed.
-
-Examples:
+Focused examples:
 
 ```bash
 python -m pytest tests/test_openrouter.py -q --basetemp .pytest_tmp_openrouter -p no:cacheprovider
 python -m pytest tests/test_tokens.py -q --basetemp .pytest_tmp_tokens -p no:cacheprovider
 python -m pytest tests/test_benchmarks.py -q --basetemp .pytest_tmp_benchmarks -p no:cacheprovider
+python scripts/provider_smoke.py --json
 ```
 
-## Current high-value areas
+For installer, Docker, startup, auth, or CI-sensitive changes, also run:
 
-Changes in these areas deserve extra care and focused regression coverage:
+```bash
+sh -n install.sh
+sh -n uninstall.sh
+```
 
-- `src/providers/openrouter.py`
-- `src/proxy.py`
-- `src/tokens.py`
-- `src/benchmarks.py`
-- `src/health.py`
-- `src/db.py`
-- `src/config.py`
-- `src/runtime_logging.py`
+Use the PowerShell parser checks from `.github/workflows/ci.yml` on Windows or
+when PowerShell is available. Do not push until the relevant local gate is
+green.
 
-## Expectations by subsystem
+## Subsystem expectations
 
 ### Provider adapters
 
-When touching provider behavior:
-
-- test retryable vs non-retryable paths separately
-- test streaming and non-streaming separately
-- keep normalization logic in the adapter, not in proxy/routing/health
-
-The OpenRouter adapter is now directly covered for:
-
-- retry exhaustion
-- raw-body error fallback parsing
-- stream setup and transport failures
-- explicit dev-stub chat and stream behavior
-
-Do not regress that direct adapter coverage by moving confidence back to only indirect API tests.
+Test retryable and non-retryable errors separately, and test streaming and
+non-streaming paths separately. Normalize provider errors in the adapter rather
+than adding provider conditionals to proxy or routing code.
 
 ### Routing and proxy
 
-When touching request handling:
-
-- preserve provider-agnostic orchestration
-- keep request requirement parsing in `src/tokens.py` where appropriate
-- keep routing, proxy, and token-estimation behavior aligned
-- verify `/readyz` behavior if startup or provider gating semantics move
+Preserve provider-agnostic orchestration. Keep capability and token requirement
+parsing in `src/tokens.py` where appropriate, and verify `/readyz` when startup,
+provider gating, or discovery behavior changes. Streaming may fail over only
+before any response content has been emitted.
 
 ### SQLite and persistence
 
-When touching persistence:
-
-- all application writes still go through the DB writer thread
-- add migration-safe regression coverage in `tests/test_db.py`
-- preserve the bounded writer-queue priority split between low-priority client logs and higher-priority metadata writes
+All application writes go through the DB writer thread. Schema changes require
+migration-safe tests in `tests/test_db.py`. Preserve the priority split that
+allows low-priority request logs to drop while metadata writes receive queue
+protection.
 
 ### Runtime logging
 
-Runtime logs are queue-backed operational events, separate from durable SQLite request telemetry.
-
-If you change runtime logging:
-
-- keep `README.md`, `config.yaml.example`, and tests aligned
-- keep the `runtime_logging` field in `GET /admin/health` aligned with code
-- preserve the `concise` / `verbose` / `debug` contract
-- remember that debug mode is intentionally very chatty
-- keep cancellation of background tokenizer preloads as a debug-only expected event rather than a warning-level failure
+Runtime logs are queue-backed process events and are separate from durable
+SQLite request telemetry. If logging changes, keep the `runtime_logging` admin
+health payload, config example, and tests aligned. Never put raw prompts,
+provider secrets, or classifier payloads into logs or durable telemetry.
 
 ### Token estimation
 
-Current policy:
-
-- local-only token estimation is considered complete
-- exact local counters are used where safely available
-- calibrated heuristics cover the remaining unresolved families
-- remote provider-native counting is not used on the request path
-- tokenizer prewarming is intentionally not enabled by default
-
-If you touch `src/tokens.py`:
-
-- preserve the safe `tiktoken` path for OpenAI-compatible families
-- preserve safe Hugging Face `AutoTokenizer` usage for resolvable non-OAI families
-- keep alias normalization tested explicitly
-- keep the heuristic classifier and profile tables aligned with regression tests
-- document any operator-visible change to `GET /admin/health -> token_estimation_review`
+The current policy is local-only: use safe exact local tokenizers when available
+and calibrated heuristics for unresolved families. Do not add remote token-count
+calls on the request path without a design decision. Preserve safe Hugging Face
+loading (`trust_remote_code=False`), alias tests, and token-review telemetry.
 
 ### Benchmark ingestion
 
-Benchmark ingestion is resilient, not guaranteed.
+Benchmark ingestion is best-effort. Preserve source freshness handling and
+fallback parsing for upstream artifacts. A benchmark failure should reduce
+enrichment quality, not stop startup or routing.
 
-If you change `src/benchmarks.py`:
+## Configuration and documentation sync
 
-- preserve best-effort behavior
-- preserve source freshness handling
-- preserve backward walking across parseable Chatbot Arena artifacts
-- preserve compatibility with the current Open LLM dataset-server row page-size limit
-- update docs if operator expectations or failure behavior change
+When public behavior, configuration, scheduler behavior, auth, persistence,
+logging, request sizing, or deployment behavior changes:
 
-## Installer and release changes
+- update the relevant implementation and tests;
+- update the one authoritative document (`README.md`, `docs/architecture.md`,
+  `docs/operations.md`, or `docs/roadmap.md`);
+- update `config.yaml.example` or `.env.example` when the configuration surface
+  changes;
+- add a concise user-visible entry to `CHANGELOG.md` when appropriate.
 
-If you change:
+Do not create a new status/spec/task document for a temporary plan. Put open
+work in `docs/roadmap.md`, stable operational guidance in `docs/operations.md`,
+and stable design intent in `docs/architecture.md`.
 
-- `install.sh`
-- `uninstall.sh`
-- `install.ps1`
-- `uninstall.ps1`
+## Installers and releases
 
-also run:
+Installer changes must preserve non-interactive environment overrides and avoid
+destructive host-level side effects. Release-facing changes should run the full
+validation gate, then follow this order:
 
-```bash
-sh -n install.sh
-sh -n uninstall.sh
-pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$null) | Out-Null"
-pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('uninstall.ps1',[ref]$null,[ref]$null) | Out-Null"
-```
+1. push to `main`;
+2. wait for main CI to pass;
+3. create/push a semver tag only after CI is green.
 
-For release-facing changes, or any change touching installers, Docker behavior, startup/bootstrap, auth, or CI-sensitive scripts, complete the full local gate before pushing:
-
-```bash
-python -m ruff check .
-python -m mypy src
-python -m pytest tests -q --basetemp .pytest_tmp_local -p no:cacheprovider
-python -m pytest tests --cov=src --cov-report=term-missing -q --basetemp .pytest_tmp_cov -p no:cacheprovider
-sh -n install.sh
-sh -n uninstall.sh
-pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$null) | Out-Null"
-pwsh -Command "[System.Management.Automation.Language.Parser]::ParseFile('uninstall.ps1',[ref]$null,[ref]$null) | Out-Null"
-```
-
-Preferred release flow:
-
-1. complete the local push gate
-2. push to `main`
-3. wait for `main` CI to pass
-4. create the semver release tag only after `main` is green
-
-Keep installer behavior aligned with the current Docker-first runtime model. Avoid destructive host-level side effects.
-
-## Documentation expectations
-
-Update docs in the same change whenever you alter:
-
-- public API behavior
-- runtime logging semantics
-- config surface or defaults
-- request-sizing behavior
-- `/admin/health` payload shape
-- scheduler behavior
-- install or release workflow
-- current spec alignment
-
-In practice, that usually means updating one or more of:
-
-- `README.md`
-- `TESTING.md`
-- `IMPLEMENTATION_GUIDE.md`
-- `CONTRIBUTING.md`
-- `config.yaml.example`
-- `CHANGELOG.md`
-- `SPEC_GAP_REVIEW.md`
-- `TASKS.md`
-- `AGENTS.md`
-
-### Operator-facing doc sync rules
-
-If the change affects operator behavior:
-
-- document the runtime consequence, not just the implementation detail
-- clarify whether the behavior is durable telemetry, runtime log output, or admin endpoint state
-- update examples if request payloads or config toggles changed
-- make sure production guidance still matches reality
+The release workflow and CI files are the source of truth for packaging and
+release automation.
 
 ## Pull requests
 
-Target `main`.
+Target `main`. Include:
 
-Good PRs in this repo are specific and operationally clear. Include:
+- what changed and why;
+- user/operator impact;
+- validation actually run and anything skipped;
+- intentional follow-up work or risks.
 
-- what changed
-- why it was needed
-- operator-visible or user-visible impact
-- validation actually run
-- skipped validation and why
-- any intentional partial follow-up work
+Use Conventional Commit prefixes such as `feat:`, `fix:`, `docs:`, `test:`,
+and `chore:`.
 
-If you changed logging or telemetry, call that out explicitly.
+## Bug and feature reports
 
-Keep the diff scoped to one workstream whenever possible.
-
-## Commit messages
-
-Use Conventional Commits:
-
-- `feat:`
-- `fix:`
-- `docs:`
-- `test:`
-- `chore:`
-
-## Reporting bugs
-
-Please include:
-
-- OS
-- Python version and/or Docker version
-- gateway version or commit
-- reproduction steps
-- relevant runtime log output
-- relevant `/admin/health` or `/admin/logs` data when applicable
-
-## Requesting features
-
-Please file a request with:
-
-- a concrete use case
-- why the current behavior is insufficient
-- whether the request is runtime-facing, operator-facing, or purely developer-facing
+Bug reports should include OS, Python/Docker version, commit or release,
+reproduction steps, relevant logs, and relevant `/admin/health` or
+`/admin/logs` data. Feature requests should state the concrete use case and
+whether the request is runtime-, operator-, or developer-facing.

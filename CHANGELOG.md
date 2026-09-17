@@ -4,6 +4,14 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ## [Unreleased]
 
+### Documentation
+
+- Consolidated living documentation into `README.md`, `docs/architecture.md`,
+  `docs/operations.md`, and `docs/roadmap.md`, with source code, configuration,
+  and workflow files remaining authoritative for implementation inventories.
+- Documented Docker as an optional deployment path and captured the proposed
+  opt-in TypeSafe AI Jev pre-routing classifier evaluation.
+
 ### Added
 
 - Queue-backed JSON runtime logging on a separate listener thread, with `concise`, `verbose`, and `debug` verbosity modes plus `GET /admin/health -> runtime_logging` status reporting.
@@ -35,6 +43,8 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ### Changed
 
+- Pinned the development NumPy version to keep the Python 3.11 mypy target
+  compatible with transitive tokenizer type stubs.
 - Discovery now performs best-effort external benchmark refresh before provider upserts and joins cached benchmark data into discovered model rows using normalized model names.
 - Benchmark refresh now honors per-source cache freshness and prefers richer parseable Chatbot Arena artifacts before weaker fallback CSVs.
 - Open LLM refresh now adapts to dynamic dataset-server row limits and accepts fallback average-score column naming when the canonical column changes.
@@ -63,6 +73,8 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ### Fixed
 
+- Discovery now waits for refreshed benchmark-cache writes before enriching
+  newly discovered models, removing a writer-thread race.
 - CI lint/install validation now passes current Ruff `UP038` and ShellCheck expectations in `src/benchmarks.py` and `install.sh`.
 - App-heavy tests now disable external leaderboard refresh and startup probes in their generated configs so CI runtime is not dominated by repeated network-bound startup work.
 - The Docker smoke job now boots the image under explicit dev-stub mode instead of expecting no-key startup to succeed without configured runtime capability.

@@ -24,6 +24,8 @@ jobs:
         run: ruff format --check src tests
       - name: Mypy
         run: mypy src
+      - name: Check generated architecture
+        run: python scripts/generate_architecture.py --check
 
   validate-installers:
     runs-on: ubuntu-latest

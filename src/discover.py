@@ -90,6 +90,7 @@ async def run_discovery(
     now = utc_now_iso()
     if settings is not None:
         benchmark_outcome = await refresh_leaderboard_cache(db, settings)
+        db.writer.flush()
         runtime_log(
             logger,
             "discovery.benchmark_refresh.completed",
