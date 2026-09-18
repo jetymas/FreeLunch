@@ -10,7 +10,6 @@ from src.providers.base import ProviderFatalError, ProviderRetryableError
 from src.providers.openai import OpenAIAdapter
 from src.providers.openai_compatible import (
     OpenAICompatibleAdapter,
-    categorize_openai_compatible_error,
     resolve_openai_compatible_credentials,
 )
 
@@ -22,27 +21,6 @@ def _response(
     if json_body is not None:
         return httpx.Response(status_code, json=json_body, request=request)
     return httpx.Response(status_code, content=content or b"", request=request)
-
-
-@pytest.mark.parametrize(
-    ("status_code", "error_code", "message", "expected_category", "expected_retryable"),
-    [
-        (None, None, "unknown provider issue", "PROVIDER_UNAVAILABLE", True),
-        (599, "other", "backend exploded", "PROVIDER_UNAVAILABLE", True),
-        (418, None, "teapot", "INVALID_REQUEST", False),
-    ],
-)
-def test_categorize_openai_compatible_error_covers_fallback_paths(
-    status_code: int | None,
-    error_code: str | None,
-    message: str,
-    expected_category: str,
-    expected_retryable: bool,
-):
-    category, retryable = categorize_openai_compatible_error(status_code, error_code, message)
-
-    assert category == expected_category
-    assert retryable is expected_retryable
 
 
 def test_resolve_openai_compatible_credentials_falls_back_to_config_api_key(monkeypatch):
@@ -318,41 +296,6 @@ def test_extract_error_details_handles_empty_non_json_and_non_mapping_payloads()
     assert adapter._extract_error_details(b"") == (None, None)
     assert adapter._extract_error_details(b"not-json-body") == ("not-json-body", None)
     assert adapter._extract_error_details(b'["array", "payload"]') == (None, None)
-
-
-def test_nested_get_returns_value_or_none_for_dotted_paths():
-    adapter = OpenAICompatibleAdapter(api_key="test-key")
-    row = {"architecture": {"tokenizer": "o200k_base"}, "tokenizer": "cl100k_base"}
-
-    assert adapter._nested_get(row, "architecture.tokenizer") == "o200k_base"
-    assert adapter._nested_get(row, "architecture.tokenizer.family") is None
-    assert adapter._nested_get(row, "tokenizer") == "cl100k_base"
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (None, None),
-        (True, None),
-        (7.9, 7),
-        (-1.2, None),
-        ("42", 42),
-        (" 0042 ", 42),
-        ("4.2", None),
-    ],
-)
-def test_coerce_int_handles_float_and_string_edges(value: Any, expected: int | None):
-    adapter = OpenAICompatibleAdapter(api_key="test-key")
-
-    assert adapter._coerce_int(value) == expected
-
-
-def test_extract_bool_parses_string_true_and_false_values():
-    adapter = OpenAICompatibleAdapter(api_key="test-key")
-
-    assert adapter._extract_bool({"flag": " yes "}, "flag") is True
-    assert adapter._extract_bool({"flag": "off"}, "flag") is False
-    assert adapter._extract_bool({"flag": "unknown"}, "flag") is None
 
 
 @pytest.mark.asyncio

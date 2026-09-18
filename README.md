@@ -41,10 +41,20 @@ Docker is optional when running from source:
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn src.main:app --host 0.0.0.0 --port 8000
+uvicorn src.main:app --host 127.0.0.1 --port 8000
 ```
 
 For development and tests, install `requirements-dev.txt` too. Copy `config.yaml.example` and `.env.example` when local configuration is needed.
+
+The base install includes exact `tiktoken` sizing and heuristic fallback. To
+also enable local Hugging Face tokenizers for supported non-OpenAI families:
+
+```bash
+pip install -r requirements-tokenizers.txt
+```
+
+Bind to a non-loopback address only when gateway authentication and appropriate
+network controls are enabled.
 
 Check the service:
 
@@ -109,7 +119,7 @@ For the current operational checklist, use [`docs/operations.md`](./docs/operati
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
-uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Validation commands:

@@ -6,6 +6,8 @@ import logging
 import queue
 import sys
 
+import pytest
+
 from src.runtime_logging import (
     JsonLineFormatter,
     RuntimeLoggingManager,
@@ -22,49 +24,19 @@ def _parse_lines(buffer: io.StringIO) -> list[dict[str, object]]:
     return [json.loads(line) for line in lines]
 
 
-def test_runtime_logging_concise_filters_verbose_and_debug_events():
+@pytest.mark.parametrize(
+    ("configured_verbosity", "expected_events"),
+    [
+        ("concise", ["concise.event"]),
+        ("verbose", ["concise.event", "verbose.event"]),
+        ("debug", ["concise.event", "verbose.event", "debug.event"]),
+    ],
+)
+def test_runtime_logging_filters_events_by_verbosity(configured_verbosity, expected_events):
     stream = io.StringIO()
     configure_runtime_logging(
         enabled=True,
-        verbosity="concise",
-        queue_size=16,
-        stream=stream,
-    )
-    logger = get_logger("tests.runtime")
-
-    runtime_log(logger, "concise.event", verbosity="concise", message="concise")
-    runtime_log(logger, "verbose.event", verbosity="verbose", message="verbose")
-    runtime_log(logger, "debug.event", verbosity="debug", message="debug")
-    shutdown_runtime_logging()
-
-    events = [entry["event"] for entry in _parse_lines(stream)]
-    assert events == ["concise.event"]
-
-
-def test_runtime_logging_verbose_includes_concise_and_verbose():
-    stream = io.StringIO()
-    configure_runtime_logging(
-        enabled=True,
-        verbosity="verbose",
-        queue_size=16,
-        stream=stream,
-    )
-    logger = get_logger("tests.runtime")
-
-    runtime_log(logger, "concise.event", verbosity="concise", message="concise")
-    runtime_log(logger, "verbose.event", verbosity="verbose", message="verbose")
-    runtime_log(logger, "debug.event", verbosity="debug", message="debug")
-    shutdown_runtime_logging()
-
-    events = [entry["event"] for entry in _parse_lines(stream)]
-    assert events == ["concise.event", "verbose.event"]
-
-
-def test_runtime_logging_debug_includes_all_events():
-    stream = io.StringIO()
-    configure_runtime_logging(
-        enabled=True,
-        verbosity="debug",
+        verbosity=configured_verbosity,
         queue_size=16,
         stream=stream,
     )
@@ -76,38 +48,8 @@ def test_runtime_logging_debug_includes_all_events():
     shutdown_runtime_logging()
 
     entries = _parse_lines(stream)
-    assert [entry["event"] for entry in entries] == [
-        "concise.event",
-        "verbose.event",
-        "debug.event",
-    ]
+    assert [entry["event"] for entry in entries] == expected_events
     assert entries[0]["foo"] == "bar"
-
-
-def test_runtime_logging_overflow_drops_low_priority_and_keeps_status():
-    stream = io.StringIO()
-    configure_runtime_logging(
-        enabled=True,
-        verbosity="debug",
-        queue_size=1,
-        stream=stream,
-    )
-    logger = get_logger("tests.runtime")
-
-    for index in range(100):
-        runtime_log(
-            logger,
-            f"debug.event.{index}",
-            verbosity="debug",
-            level=logging.DEBUG,
-            message="debug",
-            index=index,
-        )
-
-    shutdown_runtime_logging()
-
-    status = get_runtime_logging_status()
-    assert status["dropped_records"] >= 0
 
 
 def test_runtime_logging_status_reflects_configuration():

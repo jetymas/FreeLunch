@@ -158,6 +158,8 @@ EOF
 
 setup_install_dir() {
     UPGRADING=0
+    mkdir -p "${INSTALL_DIR}/data"
+    chmod 700 "${INSTALL_DIR}" "${INSTALL_DIR}/data"
     if [ -f "${INSTALL_DIR}/.env" ]; then
         answer="$(prompt "Existing installation found at ${INSTALL_DIR}. Upgrade and preserve config?" "yes" "FREELUNCH_AUTO_CONFIRM")"
         case "$answer" in
@@ -168,8 +170,6 @@ setup_install_dir() {
                 fail "Installation cancelled."
                 ;;
         esac
-    else
-        mkdir -p "${INSTALL_DIR}/data"
     fi
 }
 
@@ -178,6 +178,7 @@ write_env_file() {
         if ! grep -q '^FREELUNCH_IMAGE=' "${INSTALL_DIR}/.env"; then
             printf '\nFREELUNCH_IMAGE=%s\n' "$IMAGE" >> "${INSTALL_DIR}/.env"
         fi
+        chmod 600 "${INSTALL_DIR}/.env"
         return
     fi
 
@@ -192,10 +193,11 @@ write_env_file() {
 OPENROUTER_API_KEY=${openrouter_key}
 GATEWAY_API_KEY=${gateway_key}
 DATABASE_URL=data/freelunch.db
-APP_ENV=dev
+APP_ENV=prod
 FREELUNCH_PORT=${gateway_port}
 FREELUNCH_IMAGE=${IMAGE}
 EOF
+    chmod 600 "${INSTALL_DIR}/.env"
 }
 
 write_config_file() {
@@ -205,7 +207,7 @@ write_config_file() {
 
     cat > "${INSTALL_DIR}/config.yaml" <<'EOF'
 app:
-  env: dev
+  env: prod
 
 providers:
   openrouter:
@@ -265,9 +267,13 @@ services:
     image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
     restart: unless-stopped
     ports:
-      - "${FREELUNCH_PORT:-8000}:8000"
+      - "127.0.0.1:${FREELUNCH_PORT:-8000}:8000"
     env_file:
       - .env
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro

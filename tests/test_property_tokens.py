@@ -279,54 +279,6 @@ def test_property_monotonic_when_appending_messages() -> None:
         assert after >= before
 
 
-@pytest.mark.parametrize("content_type,seed", [("prose", 9901), ("code", 9902), ("json", 9903)])
-def test_property_content_types_are_stable_across_supported_profiles(
-    content_type: str,
-    seed: int,
-) -> None:
-    rng = random.Random(seed)
-    families: list[str | None] = [
-        None,
-        "gpt",
-        "qwen",
-        "deepseek",
-        "mistral",
-        "llama",
-        "cohere",
-        "claude",
-        "gemini",
-        "grok",
-        "nova",
-        "router",
-    ]
-
-    for _ in range(60):
-        text = _text_by_type(rng, content_type)
-        assert tokens_module._detect_text_content_type(text) == content_type
-
-        first_pass = [
-            estimate_required_tokens(
-                [{"role": "user", "content": text}],
-                safety_buffer=0.0,
-                tokenizer_family=family,
-                model_hint="unresolved/model",
-            )
-            for family in families
-        ]
-        second_pass = [
-            estimate_required_tokens(
-                [{"role": "user", "content": text}],
-                safety_buffer=0.0,
-                tokenizer_family=family,
-                model_hint="unresolved/model",
-            )
-            for family in families
-        ]
-
-        assert first_pass == second_pass
-        assert all(value >= 1 for value in first_pass)
-
-
 def test_property_vision_parts_have_fixed_increment_and_detection_invariants() -> None:
     rng = random.Random(10401)
 

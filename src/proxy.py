@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import time
@@ -81,7 +82,8 @@ def _check_gateway_auth(request: Request, authorization: str | None) -> None:
     token = authorization.split(" ", 1)[1]
     source = str(auth_state.get("source", "disabled"))
     if source == "env":
-        if token != auth_state.get("env_key"):
+        env_key = auth_state.get("env_key")
+        if not isinstance(env_key, str) or not hmac.compare_digest(token, env_key):
             raise HTTPException(status_code=401, detail="invalid bearer token")
         return
     config = auth_state.get("config")
@@ -89,6 +91,7 @@ def _check_gateway_auth(request: Request, authorization: str | None) -> None:
         return
     if source == "managed":
         raise HTTPException(status_code=401, detail="invalid bearer token")
+    raise HTTPException(status_code=401, detail="invalid bearer token")
 
 
 def _readiness_guard(request: Request) -> None:

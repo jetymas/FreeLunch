@@ -4,6 +4,16 @@ from src.config import Settings
 from src.db import Database
 
 
+def test_settings_default_gateway_host_is_loopback(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}", encoding="utf-8")
+
+    settings = Settings.from_env(str(config_path))
+
+    assert settings.gateway_host == "127.0.0.1"
+
+
 def test_settings_from_env_reads_gateway_logging_and_database_sections(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     config_path = tmp_path / "config.yaml"

@@ -1,0 +1,4 @@
+# Optional exact local tokenizers for non-OpenAI model families.
+# The base install safely falls back to calibrated heuristics without these.
+transformers==5.17.0
+sentencepiece==0.2.2

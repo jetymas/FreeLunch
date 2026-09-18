@@ -343,15 +343,6 @@ def test_secret_vault_unlock_rejects_wrong_password(client):
     assert unlock_response.json()["detail"] == "invalid vault password"
 
 
-def test_admin_uninstall_endpoint_reports_host_side_action(client):
-    response = client.get("/admin/uninstall")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["available"] is False
-    assert "Docker" in payload["reason"]
-    assert any(item["label"] == "PowerShell" for item in payload["commands"])
-
-
 def test_admin_health_reports_probe_state_preview_and_recent_activity(client):
     response = client.put(
         "/admin/config/health.max_probes_per_run",

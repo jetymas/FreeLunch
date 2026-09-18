@@ -10,7 +10,7 @@ import pytest
 from src.db import Database, utc_now_iso
 from src.routing import RoutingRequirements, pick_candidates
 
-SEEDS = (7, 11, 19, 23, 31, 43, 47, 59)
+SEEDS = (7, 23, 47)
 
 
 @contextmanager

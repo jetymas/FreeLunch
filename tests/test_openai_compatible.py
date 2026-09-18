@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -38,6 +38,9 @@ def _response(status_code: int, *, json_body=None, content: bytes | None = None)
         (400, "context_length_exceeded", "too many tokens", "CONTEXT_EXCEEDED", True),
         (422, "invalid_request", "invalid payload", "INVALID_REQUEST", False),
         (503, "server_error", "upstream unavailable", "PROVIDER_UNAVAILABLE", True),
+        (None, None, "unknown provider issue", "PROVIDER_UNAVAILABLE", True),
+        (599, "other", "backend exploded", "PROVIDER_UNAVAILABLE", True),
+        (418, None, "teapot", "INVALID_REQUEST", False),
     ],
 )
 def test_categorize_openai_compatible_error_maps_common_cases(
@@ -48,44 +51,6 @@ def test_categorize_openai_compatible_error_maps_common_cases(
     expected_retryable: bool,
 ):
     category, retryable = categorize_openai_compatible_error(status_code, error_code, message)
-
-    assert category == expected_category
-    assert retryable is expected_retryable
-
-
-@pytest.mark.parametrize(
-    "adapter_type",
-    [
-        OpenAIAdapter,
-        TogetherAdapter,
-        GroqAdapter,
-        DeepSeekAdapter,
-        XAIAdapter,
-        CerebrasAdapter,
-        PerplexityAdapter,
-        NvidiaAdapter,
-    ],
-)
-@pytest.mark.parametrize(
-    ("status_code", "error_code", "message", "expected_category", "expected_retryable"),
-    [
-        (429, "rate_limit_exceeded", "rate limit", "RATE_LIMITED", True),
-        (401, "invalid_api_key", "bad key", "AUTH_ERROR", False),
-        (400, "context_length_exceeded", "too many tokens", "CONTEXT_EXCEEDED", True),
-        (422, "invalid_request", "invalid payload", "INVALID_REQUEST", False),
-        (503, "server_error", "upstream unavailable", "PROVIDER_UNAVAILABLE", True),
-    ],
-)
-def test_openai_compatible_wrappers_share_error_categorization_contract(
-    adapter_type: type[OpenAICompatibleAdapter],
-    status_code: int | None,
-    error_code: str | None,
-    message: str,
-    expected_category: str,
-    expected_retryable: bool,
-):
-    adapter = adapter_type(api_key="test-key")
-    category, retryable = adapter.categorize_error(status_code, error_code, message)
 
     assert category == expected_category
     assert retryable is expected_retryable
@@ -503,40 +468,6 @@ async def test_request_with_retries_does_not_retry_fatal_provider_error(monkeypa
 
     assert exc_info.value.category == "AUTH_ERROR"
     assert attempts == 1
-
-
-@pytest.mark.parametrize(
-    ("register_fn_name", "expected_name", "expected_type"),
-    [
-        ("register_openai", "openai", OpenAIAdapter),
-        ("register_together", "together", TogetherAdapter),
-        ("register_groq", "groq", GroqAdapter),
-        ("register_deepseek", "deepseek", DeepSeekAdapter),
-        ("register_xai", "xai", XAIAdapter),
-        ("register_cerebras", "cerebras", CerebrasAdapter),
-        ("register_perplexity", "perplexity", PerplexityAdapter),
-        ("register_nvidia", "nvidia", NvidiaAdapter),
-    ],
-)
-def test_registry_openai_compatible_helpers_register_provider_adapters(
-    register_fn_name: str,
-    expected_name: str,
-    expected_type: type[OpenAICompatibleAdapter],
-):
-    registry = ProviderRegistry()
-    register_fn: Callable[..., Any] = getattr(registry, register_fn_name)
-
-    register_fn(
-        api_key="test-key",
-        discovery_enabled=True,
-        inference_enabled=False,
-    )
-
-    registered = registry.get_registered(expected_name)
-    assert registered.name == expected_name
-    assert registered.discovery_enabled is True
-    assert registered.inference_enabled is False
-    assert isinstance(registered.adapter, expected_type)
 
 
 def test_registry_register_configured_loads_openai_compatible_module_factories(monkeypatch):

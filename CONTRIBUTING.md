@@ -33,7 +33,7 @@ python -m venv .venv
 pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env
 cp config.yaml.example config.yaml
-uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The native path does not require Docker. Docker remains useful for integration,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 from typing import Any
 
@@ -324,33 +323,14 @@ def test_parse_chatbot_arena_csv_detects_fallback_arena_score_key():
     }
 
 
-def test_parse_chatbot_arena_snapshot_handles_recursive_mixed_shapes():
-    payload = _fixture_json("snapshot_recursive_mixed_shapes.json")
-    payload["older"]["bucket"][0]["mistralai/mixtral-8x7b-instruct"][1] = "ignored"
-
-    scores = benchmarks._parse_chatbot_arena_snapshot((payload, {"noise": "ignored"}))
-
-    assert scores == {
-        "meta llama llama 3 3 70b": 1401.2,
-        "qwen qwen2 5 7b": 1277.7,
-        "mistralai mixtral 8x7b": 1300.5,
-    }
-
-
 @pytest.mark.asyncio
-async def test_fetch_chatbot_arena_scores_prefers_elo_snapshot_when_parseable():
+async def test_fetch_chatbot_arena_scores_ignores_unsafe_pickle_artifacts():
     client = _FakeClient(
         {
             benchmarks._ARENA_TREE_URL: [
                 {"path": "elo_results_20250829.pkl"},
                 {"path": "leaderboard_table_20250804.csv"},
             ],
-            benchmarks._ARENA_RAW_URL.format(path="elo_results_20250829.pkl"): pickle.dumps(
-                {
-                    "meta-llama/llama-3.3-70b-instruct": {"rating": 1401.2},
-                    "qwen/qwen2.5-7b-instruct": 1277.7,
-                }
-            ),
             benchmarks._ARENA_RAW_URL.format(path="leaderboard_table_20250804.csv"): (
                 "Model,Arena Score\n" "Meta-Llama/Llama-3.3-70B-Instruct,1265.5\n"
             ),
@@ -360,54 +340,7 @@ async def test_fetch_chatbot_arena_scores_prefers_elo_snapshot_when_parseable():
     scores = await benchmarks.fetch_chatbot_arena_scores(client)
 
     assert scores == {
-        "meta llama llama 3 3 70b": 1401.2,
-        "qwen qwen2 5 7b": 1277.7,
-    }
-
-
-@pytest.mark.asyncio
-async def test_fetch_chatbot_arena_scores_falls_back_when_snapshot_cannot_be_parsed():
-    client = _FakeClient(
-        {
-            benchmarks._ARENA_TREE_URL: [
-                {"path": "elo_results_20250829.pkl"},
-                {"path": "leaderboard_table_20250804.csv"},
-            ],
-            benchmarks._ARENA_RAW_URL.format(path="elo_results_20250829.pkl"): b"not-a-pickle",
-            benchmarks._ARENA_RAW_URL.format(path="leaderboard_table_20250804.csv"): (
-                "Model,Arena ELO\n" "Meta-Llama/Llama-3.3-70B-Instruct,1265.5\n"
-            ),
-        }
-    )
-
-    scores = await benchmarks.fetch_chatbot_arena_scores(client)
-
-    assert scores == {
         "meta llama llama 3 3 70b": 1265.5,
-    }
-
-
-@pytest.mark.asyncio
-async def test_fetch_chatbot_arena_scores_uses_older_parseable_snapshot_when_latest_is_bad():
-    client = _FakeClient(
-        {
-            benchmarks._ARENA_TREE_URL: [
-                {"path": "elo_results_20250828.pkl"},
-                {"path": "elo_results_20250829.pkl"},
-            ],
-            benchmarks._ARENA_RAW_URL.format(path="elo_results_20250828.pkl"): pickle.dumps(
-                {
-                    "meta-llama/llama-3.3-70b-instruct": {"rating": 1401.2},
-                }
-            ),
-            benchmarks._ARENA_RAW_URL.format(path="elo_results_20250829.pkl"): b"not-a-pickle",
-        }
-    )
-
-    scores = await benchmarks.fetch_chatbot_arena_scores(client)
-
-    assert scores == {
-        "meta llama llama 3 3 70b": 1401.2,
     }
 
 
@@ -430,19 +363,6 @@ async def test_fetch_chatbot_arena_scores_falls_back_to_arena_hard_when_table_ha
     assert scores == {
         "meta llama llama 3 3 70b": 80.1,
     }
-
-
-@pytest.mark.asyncio
-async def test_fetch_chatbot_arena_scores_returns_empty_for_non_list_tree_payload():
-    client = _FakeClient(
-        {
-            benchmarks._ARENA_TREE_URL: _fixture_json("arena_tree_non_list.json"),
-        }
-    )
-
-    scores = await benchmarks.fetch_chatbot_arena_scores(client)
-
-    assert scores == {}
 
 
 @pytest.mark.asyncio

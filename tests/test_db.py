@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from src.benchmarks import normalize_model_name
-from src.db import DB_SCHEMA_VERSION, HIGH_PRIORITY_QUEUE_RESERVE, Database
+from src.db import DB_SCHEMA_VERSION, Database
 from src.discover import run_discovery
 
 
@@ -405,16 +405,6 @@ def test_high_priority_writes_use_reserved_queue_capacity(tmp_path):
     assert client_logged is True
     assert override is not None
     assert override["value"] == "8080"
-
-
-def test_writer_queue_capacity_reserves_space_for_metadata_writes(tmp_path):
-    db = Database(
-        str(tmp_path / "db-queue-capacity.db"),
-        request_log_enabled=True,
-        request_log_queue_size=3,
-    )
-
-    assert db.writer.queue_capacity() == 3 + HIGH_PRIORITY_QUEUE_RESERVE
 
 
 def test_log_request_persists_token_estimation_observability_fields(tmp_path):

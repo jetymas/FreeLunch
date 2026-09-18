@@ -183,6 +183,22 @@ def test_v1_endpoints_reject_invalid_bearer_token(client, monkeypatch):
     assert called["chat"] == 0
 
 
+def test_gateway_auth_fails_closed_for_unknown_enabled_source(client):
+    client.app.state.gateway_auth = {
+        "mode": "unexpected",
+        "enabled": True,
+        "source": "unexpected",
+    }
+
+    response = client.get(
+        "/v1/models",
+        headers={"Authorization": "Bearer anything"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid bearer token"
+
+
 def test_chat_completions_fails_over_on_unexpected_exception(client, monkeypatch):
     _insert_backup_model(
         client,

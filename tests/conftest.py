@@ -12,6 +12,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture(autouse=True)
+def disable_discovery_tokenizer_preload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep integration tests deterministic and free of tokenizer downloads."""
+    import src.discover as discover
+
+    monkeypatch.setattr(discover, "schedule_tokenizer_preload", lambda _model_hint: False)
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     (tmp_path / "config.yaml").write_text(

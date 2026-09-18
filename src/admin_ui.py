@@ -6,6 +6,15 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
 ASSET_DIR = Path(__file__).with_name("admin_assets")
+SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": (
+        "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
 
 
 def build_admin_ui_router() -> APIRouter:
@@ -13,7 +22,11 @@ def build_admin_ui_router() -> APIRouter:
 
     @router.get("/admin/ui")
     async def admin_ui_index() -> FileResponse:
-        return FileResponse(ASSET_DIR / "index.html", media_type="text/html")
+        return FileResponse(
+            ASSET_DIR / "index.html",
+            media_type="text/html",
+            headers=SECURITY_HEADERS,
+        )
 
     @router.get("/admin/ui/")
     async def admin_ui_trailing_slash() -> RedirectResponse:
@@ -27,6 +40,6 @@ def build_admin_ui_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="asset not found")
         if not resolved.is_file():
             raise HTTPException(status_code=404, detail="asset not found")
-        return FileResponse(resolved)
+        return FileResponse(resolved, headers=SECURITY_HEADERS)
 
     return router

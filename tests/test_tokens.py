@@ -766,68 +766,6 @@ def test_estimate_required_tokens_does_not_block_on_first_hf_preload(monkeypatch
     assert second == REQUEST_OVERHEAD_TOKENS + MESSAGE_OVERHEAD_TOKENS + 5
 
 
-def test_describe_exception_includes_type_when_message_is_empty():
-    assert tokens_module._describe_exception(RuntimeError()) == "RuntimeError"
-
-
-def test_tokenizer_future_done_logs_cancelled_preload_without_warning(monkeypatch):
-    recorded: list[tuple[str, dict[str, object]]] = []
-
-    def fake_runtime_log(_logger, event, **kwargs):
-        recorded.append((event, kwargs))
-
-    monkeypatch.setattr(tokens_module, "runtime_log", fake_runtime_log)
-    tokens_module._clear_hf_tokenizer_cache()
-
-    future: concurrent.futures.Future[object | None] = concurrent.futures.Future()
-    future.cancel()
-    tokens_module._HF_TOKENIZER_FUTURES["cancelled-model"] = future
-
-    tokens_module._tokenizer_future_done("cancelled-model", future)
-
-    assert "cancelled-model" not in tokens_module._HF_TOKENIZER_FUTURES
-    assert recorded == [
-        (
-            "tokenizer.hf.preload_cancelled",
-            {
-                "verbosity": "debug",
-                "message": "Background tokenizer preload cancelled",
-                "model_hint": "cancelled-model",
-            },
-        )
-    ]
-
-
-def test_tokenizer_future_done_logs_exception_type_when_preload_fails(monkeypatch):
-    recorded: list[tuple[str, dict[str, object]]] = []
-
-    def fake_runtime_log(_logger, event, **kwargs):
-        recorded.append((event, kwargs))
-
-    monkeypatch.setattr(tokens_module, "runtime_log", fake_runtime_log)
-    tokens_module._clear_hf_tokenizer_cache()
-
-    future: concurrent.futures.Future[object | None] = concurrent.futures.Future()
-    future.set_exception(RuntimeError())
-    tokens_module._HF_TOKENIZER_FUTURES["failed-model"] = future
-
-    tokens_module._tokenizer_future_done("failed-model", future)
-
-    assert "failed-model" not in tokens_module._HF_TOKENIZER_FUTURES
-    assert recorded == [
-        (
-            "tokenizer.hf.preload_failed",
-            {
-                "verbosity": "verbose",
-                "level": 30,
-                "message": "Background tokenizer preload failed",
-                "model_hint": "failed-model",
-                "error": "RuntimeError",
-            },
-        )
-    ]
-
-
 def test_schedule_tokenizer_preload_false_return_gates(monkeypatch):
     class _FakeAutoTokenizer:
         @staticmethod

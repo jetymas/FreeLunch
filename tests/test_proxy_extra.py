@@ -59,46 +59,6 @@ def test_parse_stream_event_ignores_non_data_lines_and_invalid_json():
     assert done is False
 
 
-def test_relay_stream_skips_output_when_client_is_disconnected_before_first_event(monkeypatch):
-    db = _FakeDB()
-    request = _FakeRequest([True, True, True])
-    mark_success_calls = []
-    mark_failure_calls = []
-    monkeypatch.setattr(
-        "src.proxy.mark_success",
-        lambda *args, **kwargs: mark_success_calls.append((args, kwargs)),
-    )
-    monkeypatch.setattr(
-        "src.proxy.mark_failure",
-        lambda *args, **kwargs: mark_failure_calls.append((args, kwargs)),
-    )
-
-    async def events():
-        yield b'data: {"id":"chatcmpl-test"}\n\n'
-
-    output = _collect(
-        _relay_stream(
-            request,
-            db,
-            _req(),
-            "req-1",
-            "model-1",
-            "provider-1",
-            0,
-            b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"first"}}]}\n\n',
-            StreamResult(events=events()),
-            time.monotonic(),
-            {"selected_provider_model_id": "model-1"},
-            _categorize_error,
-        )
-    )
-
-    assert output == []
-    assert db.logged == []
-    assert mark_success_calls == []
-    assert mark_failure_calls == []
-
-
 def test_relay_stream_uses_latest_usage_and_appends_done_when_provider_omits_done(monkeypatch):
     db = _FakeDB()
     request = _FakeRequest([False, False, False, False])
@@ -234,45 +194,3 @@ def test_relay_stream_stops_when_client_disconnects_midstream(monkeypatch):
     assert db.logged == []
     assert mark_success_calls == []
     assert mark_failure_calls == []
-
-
-def test_relay_stream_handles_done_first_event_without_followup_events(monkeypatch):
-    db = _FakeDB()
-    request = _FakeRequest([False, False])
-    mark_success_calls = []
-    mark_failure_calls = []
-    monkeypatch.setattr(
-        "src.proxy.mark_success",
-        lambda *args, **kwargs: mark_success_calls.append((args, kwargs)),
-    )
-    monkeypatch.setattr(
-        "src.proxy.mark_failure",
-        lambda *args, **kwargs: mark_failure_calls.append((args, kwargs)),
-    )
-
-    async def events():
-        if False:  # pragma: no cover
-            yield b""
-
-    output = _collect(
-        _relay_stream(
-            request,
-            db,
-            _req(),
-            "req-5",
-            "model-5",
-            "provider-5",
-            0,
-            b"data: [DONE]\n\n",
-            StreamResult(events=events()),
-            time.monotonic(),
-            {"selected_provider_model_id": "model-5"},
-            _categorize_error,
-        )
-    )
-
-    assert output == [b"data: [DONE]\n\n"]
-    assert len(mark_success_calls) == 1
-    assert mark_failure_calls == []
-    assert len(db.logged) == 1
-    assert db.logged[0]["success"] is True

@@ -43,8 +43,16 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ### Changed
 
-- Pinned the development NumPy version to keep the Python 3.11 mypy target
-  compatible with transitive tokenizer type stubs.
+- Updated the runtime web, HTTP, scheduler, serialization, cryptography, and
+  token-counting dependencies, plus the pytest toolchain.
+- Centralized the coverage floor at 85%, removed low-signal duplicate and
+  private-helper tests, and isolated integration tests from optional tokenizer
+  downloads. The behavior-focused suite now collects 341 tests.
+- Added the development-only `httpx2` dependency recommended by the current
+  Starlette test client; production HTTP continues to use `httpx`.
+- Moved Hugging Face `transformers` and `sentencepiece` into the optional
+  `requirements-tokenizers.txt` install; the base runtime retains safe
+  heuristic fallback.
 - Discovery now performs best-effort external benchmark refresh before provider upserts and joins cached benchmark data into discovered model rows using normalized model names.
 - Benchmark refresh now honors per-source cache freshness and prefers richer parseable Chatbot Arena artifacts before weaker fallback CSVs.
 - Open LLM refresh now adapts to dynamic dataset-server row limits and accepts fallback average-score column naming when the canonical column changes.
@@ -73,6 +81,16 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ### Fixed
 
+- Removed remote pickle deserialization from benchmark ingestion; Chatbot Arena
+  refresh now consumes text/CSV artifacts only.
+- Docker and installer deployments now bind to loopback by default, exclude
+  local secret/state files from build contexts, restrict Linux secret-file
+  permissions, default installer deployments to production mode, drop container
+  capabilities, and enable no-new-privileges.
+- Environment-token comparison is constant-time and unexpected enabled auth
+  states now fail closed.
+- Admin UI assets now send no-store, content-sniffing, framing, referrer, and
+  Content Security Policy headers.
 - Discovery now waits for refreshed benchmark-cache writes before enriching
   newly discovered models, removing a writer-thread race.
 - CI lint/install validation now passes current Ruff `UP038` and ShellCheck expectations in `src/benchmarks.py` and `install.sh`.

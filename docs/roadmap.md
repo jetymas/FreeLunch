@@ -72,15 +72,25 @@ Acceptance criteria:
 
 ## 3. Reduce dependencies and review security
 
-Audit dependencies against actual architectural use. Consider making heavyweight
-tokenizer packages optional where heuristic fallback already exists, while
-documenting accuracy tradeoffs. Keep dependencies with direct runtime roles
-until measured alternatives exist.
+Heavyweight Hugging Face tokenizer packages are now optional while the base
+install retains `tiktoken` and heuristic fallback. Continue measuring accuracy
+before removing exact-token support with demonstrated routing value.
 
-Review authentication defaults, admin exposure, secret storage, outbound HTTP,
-remote tokenizer loading, Docker hardening, dependency pinning, and log/privacy
-boundaries. Record decisions here only until they become stable architecture or
-operator guidance, then link from [`architecture.md`](./architecture.md) or
+Remaining security work, in priority order:
+
+1. Add request/body, upstream response, and SSE event size limits plus streaming
+   idle/total deadlines.
+2. Add rate limits for failed gateway authentication and vault unlock attempts.
+3. Restrict or explicitly opt in to provider base URLs and remote tokenizer
+   repositories outside known HTTPS hosts.
+4. Run the production container as a non-root user after defining a
+   migration-safe ownership strategy for bind-mounted SQLite data.
+5. Pin CI actions to immutable commits and add dependency/image audit,
+   provenance, and SBOM checks.
+6. Add production controls for API documentation and browser security headers.
+
+Record decisions here only until they become stable architecture or operator
+guidance, then link from [`architecture.md`](./architecture.md) or
 [`operations.md`](./operations.md).
 
 ## Decision rules

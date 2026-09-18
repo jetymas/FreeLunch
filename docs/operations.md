@@ -26,8 +26,12 @@ For native execution:
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn src.main:app --host 0.0.0.0 --port 8000
+uvicorn src.main:app --host 127.0.0.1 --port 8000
 ```
+
+Docker Compose and the installers likewise publish the gateway on loopback by
+default. A non-loopback bind is an explicit deployment decision and requires a
+gateway key plus suitable firewall or reverse-proxy controls.
 
 Configure at least one real provider key. The OpenRouter no-key stub is allowed
 only with `APP_ENV=dev` and explicit `providers.openrouter.dev_stub_enabled=true`.
@@ -92,11 +96,15 @@ Streaming cannot fail over after partial output has been sent.
 
 ## Token estimation
 
-Token estimation is local-only by policy: use safe exact local tokenizers where
-available and calibrated heuristics for unresolved families. The request path
-does not call remote token-count APIs. Background tokenizer preload is best
-effort and may be cancelled during shutdown. Inspect `token_estimation_review`
-in `/admin/health` when investigating context failures or estimate drift.
+Token counting executes locally: the base install uses `tiktoken` and calibrated
+heuristics. Hugging Face `transformers` and `sentencepiece` are an optional
+install from `requirements-tokenizers.txt`; without them, unsupported families
+safely use heuristics. When enabled, background preload may download tokenizer
+assets from Hugging Face unless they are already cached or offline mode is
+configured. The request path does not call a remote token-count API. Preload is
+best effort and may be cancelled during shutdown. Inspect
+`token_estimation_review` in `/admin/health` when investigating context failures
+or estimate drift.
 
 ## Persistence and lifecycle
 

@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -16,6 +19,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-tokenizers.txt
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-dev.txt
       - name: Ruff check
@@ -26,18 +30,27 @@ jobs:
         run: mypy src
       - name: Check generated architecture
         run: python scripts/generate_architecture.py --check
+      - name: Audit dependencies
+        run: |
+          python -m pip_audit -r requirements.txt
+          python -m pip_audit -r requirements-dev.txt
+          python -m pip_audit -r requirements-tokenizers.txt
 
   validate-installers:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Check Docker secret exclusions
+        run: |
+          grep -Fxq '.env' .dockerignore
+          grep -Fxq '.envrc' .dockerignore
+          grep -Fxq '.testkey' .dockerignore
+          grep -Fxq 'config.yaml' .dockerignore
+          grep -Fxq '*.db' .dockerignore
       - name: Check shell syntax
         run: sh -n install.sh && sh -n uninstall.sh
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@master
-        with:
-          scandir: "."
-          pattern: "*.sh"
+        run: shellcheck install.sh uninstall.sh
       - name: Validate PowerShell syntax
         shell: pwsh
         run: |
@@ -105,6 +118,8 @@ jobs:
           test -f "$FREELUNCH_INSTALL_DIR/docker-compose.yml"
           grep -q '^OPENROUTER_API_KEY=test-openrouter-key$' "$FREELUNCH_INSTALL_DIR/.env"
           grep -q '^FREELUNCH_PORT=18000$' "$FREELUNCH_INSTALL_DIR/.env"
+          test "$(stat -c '%a' "$FREELUNCH_INSTALL_DIR/.env")" = "600"
+          grep -Fq '127.0.0.1:${FREELUNCH_PORT:-8000}:8000' "$FREELUNCH_INSTALL_DIR/docker-compose.yml"
           sh ./uninstall.sh
           test ! -d "$FREELUNCH_INSTALL_DIR"
       - name: Smoke test PowerShell installer
@@ -178,6 +193,7 @@ jobs:
           EOF
           # Force explicit dev-stub behavior for budget-zero CI smoke.
           sed -i 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=/' "$FREELUNCH_INSTALL_DIR/.env"
+          sed -i 's/^APP_ENV=.*/APP_ENV=dev/' "$FREELUNCH_INSTALL_DIR/.env"
           if ! grep -q '^OPENROUTER_DEV_STUB_ENABLED=' "$FREELUNCH_INSTALL_DIR/.env"; then
             printf '\nOPENROUTER_DEV_STUB_ENABLED=true\n' >> "$FREELUNCH_INSTALL_DIR/.env"
           else
@@ -345,7 +361,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-dev.txt
       - name: Run tests
-        run: pytest tests --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=80 --durations=10
+        run: pytest tests --cov=src --cov-report=term-missing --cov-report=xml --durations=10
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4

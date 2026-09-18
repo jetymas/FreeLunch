@@ -57,7 +57,7 @@ class Settings:
 
     openrouter_api_key: str = ""
     gateway_api_key: str = ""
-    gateway_host: str = "0.0.0.0"
+    gateway_host: str = "127.0.0.1"
     gateway_port: int = 8000
     gateway_workers: int = 1
     gateway_log_level: str = "info"
@@ -221,7 +221,7 @@ class Settings:
         return cls(
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
             gateway_api_key=os.getenv("GATEWAY_API_KEY", ""),
-            gateway_host=str(gateway.get("host", "0.0.0.0")),
+            gateway_host=str(gateway.get("host", "127.0.0.1")),
             gateway_port=max(int(gateway.get("port", 8000)), 1),
             gateway_workers=max(int(gateway.get("workers", 1)), 1),
             gateway_log_level=str(gateway.get("log_level", "info")),

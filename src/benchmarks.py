@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
-import pickle
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -148,46 +147,6 @@ def _parse_chatbot_arena_csv(text: str) -> dict[str, float]:
     return scores
 
 
-def _parse_chatbot_arena_snapshot(payload: Any) -> dict[str, float]:
-    if isinstance(payload, dict):
-        direct_scores: dict[str, float] = {}
-        for model_name, value in payload.items():
-            if not isinstance(model_name, str):
-                continue
-            if isinstance(value, int | float):
-                _update_score(direct_scores, model_name, float(value))
-                continue
-            if isinstance(value, dict):
-                for key in _ARENA_ELO_COLUMNS:
-                    score = _safe_float(value.get(key))
-                    if score is not None:
-                        _update_score(direct_scores, model_name, score)
-                        break
-                else:
-                    for key, candidate in value.items():
-                        if not isinstance(key, str):
-                            continue
-                        normalized_key = key.strip().lower()
-                        if normalized_key in _ARENA_ELO_COLUMNS:
-                            _update_score(direct_scores, model_name, _safe_float(candidate))
-                            break
-        if direct_scores:
-            return direct_scores
-
-        nested_scores: dict[str, float] = {}
-        for value in payload.values():
-            nested_scores.update(_parse_chatbot_arena_snapshot(value))
-        return nested_scores
-
-    if isinstance(payload, list | tuple):
-        scores: dict[str, float] = {}
-        for item in payload:
-            scores.update(_parse_chatbot_arena_snapshot(item))
-        return scores
-
-    return {}
-
-
 def _parse_rows_length_limit(exc: httpx.HTTPStatusError) -> int | None:
     if exc.response.status_code != 422:
         return None
@@ -234,21 +193,6 @@ async def fetch_chatbot_arena_scores(
     items = tree_response.json()
     if not isinstance(items, list):
         return {}
-
-    elo_snapshot_paths = _matching_paths(
-        items,
-        prefix="elo_results_",
-        suffix=".pkl",
-    )
-    for elo_snapshot_path in reversed(elo_snapshot_paths):
-        response = await client.get(_ARENA_RAW_URL.format(path=elo_snapshot_path))
-        response.raise_for_status()
-        try:
-            parsed = _parse_chatbot_arena_snapshot(pickle.loads(response.content))
-        except Exception:
-            parsed = {}
-        if parsed:
-            return parsed
 
     leaderboard_table_paths = _matching_paths(
         items,

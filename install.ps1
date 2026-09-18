@@ -74,6 +74,7 @@ function Write-EnvFile {
         if ($content -notmatch "(?m)^FREELUNCH_IMAGE=") {
             Add-Content -Path $envPath -Value "`r`nFREELUNCH_IMAGE=$Image"
         }
+        Protect-SecretFile $envPath
         return
     }
 
@@ -89,10 +90,23 @@ function Write-EnvFile {
 OPENROUTER_API_KEY=$openrouterKey
 GATEWAY_API_KEY=$gatewayKey
 DATABASE_URL=data/freelunch.db
-APP_ENV=dev
+APP_ENV=prod
 FREELUNCH_PORT=$gatewayPort
 FREELUNCH_IMAGE=$Image
 "@ | Set-Content -Path (Join-Path $InstallDir ".env") -Encoding UTF8
+    Protect-SecretFile (Join-Path $InstallDir ".env")
+}
+
+function Protect-SecretFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($env:OS -eq "Windows_NT") {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        & icacls.exe $Path /inheritance:r /grant:r "${identity}:(F)" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Failed to restrict permissions on $Path"
+        }
+    }
 }
 
 function Write-ConfigFile {
@@ -103,7 +117,7 @@ function Write-ConfigFile {
 
     @"
 app:
-  env: dev
+  env: prod
 
 providers:
   openrouter:
@@ -163,9 +177,13 @@ services:
     image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
     restart: unless-stopped
     ports:
-      - "${FREELUNCH_PORT:-8000}:8000"
+      - "127.0.0.1:${FREELUNCH_PORT:-8000}:8000"
     env_file:
       - .env
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro

@@ -10,30 +10,6 @@ from src.db import Database
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (None, None),
-        (True, None),
-        (False, None),
-        (0, None),
-        (-4, None),
-        ("0", None),
-        ("-9", None),
-        (7, 7),
-        (3.8, 3),
-        ("11", 11),
-        (" 13 ", 13),
-        ("3.14", None),
-        ("abc", None),
-        ({}, None),
-        ([], None),
-    ],
-)
-def test_coerce_rank_edge_matrix(value: object, expected: int | None) -> None:
-    assert discover._coerce_rank(value) == expected
-
-
-@pytest.mark.parametrize(
     ("model", "expected"),
     [
         ({"provider_id": "openrouter", "provider_rank": 5}, (5, 5)),

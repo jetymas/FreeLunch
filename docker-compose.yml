@@ -2,8 +2,13 @@ services:
   freelunch:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro

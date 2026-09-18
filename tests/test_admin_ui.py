@@ -8,12 +8,17 @@ def test_admin_ui_assets_are_served(client):
     assert "FreeLunch Admin" in index_response.text
     assert "Control Console" in index_response.text
     assert 'data-page-link="health"' in index_response.text
+    assert index_response.headers["cache-control"] == "no-store"
+    assert index_response.headers["x-content-type-options"] == "nosniff"
+    assert index_response.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in index_response.headers["content-security-policy"]
 
     script_response = client.get("/admin/ui/app.js")
     assert script_response.status_code == 200
     assert "javascript" in script_response.headers["content-type"]
     assert "renderHealthPage" in script_response.text
     assert "refreshCurrentPage" in script_response.text
+    assert script_response.headers["cache-control"] == "no-store"
 
     module_response = client.get("/admin/ui/page-health.js")
     assert module_response.status_code == 200
