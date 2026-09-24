@@ -95,8 +95,8 @@ Use parallel agents only when file ownership is clearly separable. The main inte
 
 ### Recommended current split
 
-Current phase: maintain the single-node platform while evaluating optional
-classification and native deployment improvements.
+Current phase: maintain the single-node platform while addressing the remaining
+security controls and measuring local token-estimation value.
 
 Phase A: safe to run in parallel
 

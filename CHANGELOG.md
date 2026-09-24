@@ -9,11 +9,21 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 - Consolidated living documentation into `README.md`, `docs/architecture.md`,
   `docs/operations.md`, and `docs/roadmap.md`, with source code, configuration,
   and workflow files remaining authoritative for implementation inventories.
-- Documented Docker as an optional deployment path and captured the proposed
-  opt-in TypeSafe AI Jev pre-routing classifier evaluation.
+- Documented Docker as an optional deployment path and removed the hosted
+  classifier proposal to keep routing usable without a paid service.
 
 ### Added
 
+- A native `systemd` user-service template, lifecycle runbook, and native CI
+  startup/readiness/chat smoke check.
+- Configurable chat-body, upstream-response, and SSE-event limits plus stream
+  idle and total deadlines.
+- Per-client failed gateway-auth and vault-unlock throttles with bounded memory
+  and `Retry-After` responses.
+- Production API-docs control and browser security headers for API and admin
+  responses.
+- Immutable GitHub Actions pins, a CI container vulnerability scan, and
+  release-image SBOM and provenance attestations.
 - Queue-backed JSON runtime logging on a separate listener thread, with `concise`, `verbose`, and `debug` verbosity modes plus `GET /admin/health -> runtime_logging` status reporting.
 - Probe-budget usage, probe runtime summaries, recent probe/bootstrap activity, and token-estimation review summaries in `/admin/health`.
 - Periodic config override refresh via a scheduled `config_refresh` job.

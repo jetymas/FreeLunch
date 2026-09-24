@@ -56,6 +56,12 @@ pip install -r requirements-tokenizers.txt
 Bind to a non-loopback address only when gateway authentication and appropriate
 network controls are enabled.
 
+For a persistent Linux installation, use the
+[`systemd` user service template](./deploy/freelunch.service.example) and the
+[native setup, backup, upgrade, and uninstall steps](./docs/operations.md#native-user-service-systemd).
+It runs as your user on loopback with its SQLite database and secret environment
+file outside the checkout.
+
 Check the service:
 
 ```bash
@@ -89,7 +95,7 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-The complete request and schema surface is defined by [`src/proxy.py`](./src/proxy.py) and the generated `/docs` and `/openapi.json` endpoints. Do not maintain a second handwritten route inventory here.
+The complete request and schema surface is defined by [`src/proxy.py`](./src/proxy.py) and, in development mode, the generated `/docs` and `/openapi.json` endpoints. Production disables API documentation by default; set `API_DOCS_ENABLED=true` explicitly when needed. Do not maintain a second handwritten route inventory here.
 
 ## Configuration and secrets
 
@@ -159,11 +165,8 @@ Architecture diagrams are intentionally small and anchored to these source entry
 
 The active direction is tracked in [`docs/roadmap.md`](./docs/roadmap.md):
 
-1. evaluate an optional, cheap prompt-task classifier before model selection;
-2. make native Python deployment a first-class path while keeping Docker optional;
-3. reduce unnecessary dependencies and review security boundaries.
-
-The classifier is deliberately separate from token estimation and provider adapters. Its design must define opt-in behavior, bounded latency, privacy, failure handling, and whether classification changes routing.
+1. measure token-estimation value before changing exact-token support;
+2. complete the remaining security work without adding mandatory paid services.
 
 ## Documentation map
 

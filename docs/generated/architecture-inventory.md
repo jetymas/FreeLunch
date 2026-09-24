@@ -29,6 +29,7 @@ flowchart LR
     node_src_runtime_logging["src.runtime_logging"]
     node_src_scheduler["src.scheduler"]
     node_src_secret_store["src.secret_store"]
+    node_src_security_throttle["src.security_throttle"]
     node_src_tokens["src.tokens"]
     node_src_benchmarks --> node_src_db
     node_src_benchmarks --> node_src_runtime_logging
@@ -58,6 +59,7 @@ flowchart LR
     node_src_proxy --> node_src_routing
     node_src_proxy --> node_src_runtime_logging
     node_src_proxy --> node_src_secret_store
+    node_src_proxy --> node_src_security_throttle
     node_src_proxy --> node_src_tokens
     node_src_ranking --> node_src_config
     node_src_ranking --> node_src_db
@@ -80,7 +82,7 @@ flowchart LR
 | `src.db` | — | — |
 | `src.discover` | `src.benchmarks`, `src.config`, `src.db`, `src.providers.registry`, `src.runtime_logging`, `src.tokens` | — |
 | `src.health` | `src.config`, `src.db`, `src.runtime_logging` | — |
-| `src.main` | `src.admin_ui`, `src.config`, `src.db`, `src.providers.registry`, `src.proxy`, `src.runtime_logging`, `src.scheduler`, `src.secret_store`, `src.tokens` | `apscheduler`, `fastapi` |
+| `src.main` | `src.admin_ui`, `src.config`, `src.db`, `src.providers.registry`, `src.proxy`, `src.runtime_logging`, `src.scheduler`, `src.secret_store`, `src.tokens` | `apscheduler`, `fastapi`, `yaml` |
 | `src.providers.base` | — | — |
 | `src.providers.cerebras` | `src.providers.openai_compatible`, `src.providers.registry` | — |
 | `src.providers.deepseek` | `src.providers.openai_compatible`, `src.providers.registry` | — |
@@ -93,46 +95,47 @@ flowchart LR
 | `src.providers.registry` | `src.config`, `src.providers.base`, `src.providers.cerebras`, `src.providers.deepseek`, `src.providers.groq`, `src.providers.nvidia`, `src.providers.openai`, `src.providers.openrouter`, `src.providers.perplexity`, `src.providers.together`, `src.providers.xai` | — |
 | `src.providers.together` | `src.providers.openai_compatible`, `src.providers.registry` | — |
 | `src.providers.xai` | `src.providers.openai_compatible`, `src.providers.registry` | — |
-| `src.proxy` | `src.config`, `src.db`, `src.health`, `src.providers.base`, `src.routing`, `src.runtime_logging`, `src.secret_store`, `src.tokens` | `fastapi` |
+| `src.proxy` | `src.config`, `src.db`, `src.health`, `src.providers.base`, `src.routing`, `src.runtime_logging`, `src.secret_store`, `src.security_throttle`, `src.tokens` | `fastapi` |
 | `src.ranking` | `src.config`, `src.db` | — |
 | `src.routing` | `src.db`, `src.tokens` | — |
 | `src.runtime_logging` | — | — |
 | `src.scheduler` | `src.discover`, `src.health`, `src.ranking`, `src.runtime_logging` | `apscheduler` |
 | `src.secret_store` | — | `cryptography` |
+| `src.security_throttle` | — | — |
 | `src.tokens` | `src.runtime_logging` | `tiktoken`, `transformers` |
 
 ## HTTP routes
 
 | Method | Path | Handler | Source |
 | --- | --- | --- | --- |
-| GET | `/admin/config` | `admin_config` | [src/proxy.py:708](../../src/proxy.py#L708) |
-| DELETE | `/admin/config/{key:path}` | `admin_delete_config` | [src/proxy.py:992](../../src/proxy.py#L992) |
-| PUT | `/admin/config/{key:path}` | `admin_set_config` | [src/proxy.py:961](../../src/proxy.py#L961) |
-| DELETE | `/admin/gateway-auth` | `admin_disable_gateway_auth` | [src/proxy.py:765](../../src/proxy.py#L765) |
-| GET | `/admin/gateway-auth` | `admin_gateway_auth` | [src/proxy.py:730](../../src/proxy.py#L730) |
-| PUT | `/admin/gateway-auth` | `admin_set_gateway_auth` | [src/proxy.py:737](../../src/proxy.py#L737) |
-| POST | `/admin/gateway-auth/inherit` | `admin_inherit_gateway_auth` | [src/proxy.py:782](../../src/proxy.py#L782) |
-| GET | `/admin/health` | `admin_health` | [src/proxy.py:644](../../src/proxy.py#L644) |
-| GET | `/admin/logs` | `admin_logs` | [src/proxy.py:1038](../../src/proxy.py#L1038) |
-| GET | `/admin/models` | `admin_models` | [src/proxy.py:569](../../src/proxy.py#L569) |
-| GET | `/admin/models/{model_id:path}` | `admin_model_detail` | [src/proxy.py:589](../../src/proxy.py#L589) |
-| POST | `/admin/models/{model_id:path}/disable` | `admin_disable_model` | [src/proxy.py:612](../../src/proxy.py#L612) |
-| POST | `/admin/models/{model_id:path}/enable` | `admin_enable_model` | [src/proxy.py:628](../../src/proxy.py#L628) |
-| POST | `/admin/refresh` | `admin_refresh` | [src/proxy.py:1016](../../src/proxy.py#L1016) |
-| GET | `/admin/secrets` | `admin_secrets` | [src/proxy.py:799](../../src/proxy.py#L799) |
-| POST | `/admin/secrets/vault/lock` | `admin_lock_secret_vault` | [src/proxy.py:876](../../src/proxy.py#L876) |
-| POST | `/admin/secrets/vault/setup` | `admin_setup_secret_vault` | [src/proxy.py:809](../../src/proxy.py#L809) |
-| POST | `/admin/secrets/vault/unlock` | `admin_unlock_secret_vault` | [src/proxy.py:845](../../src/proxy.py#L845) |
-| DELETE | `/admin/secrets/{secret_key:path}` | `admin_delete_secret` | [src/proxy.py:929](../../src/proxy.py#L929) |
-| PUT | `/admin/secrets/{secret_key:path}` | `admin_set_secret` | [src/proxy.py:898](../../src/proxy.py#L898) |
+| GET | `/admin/config` | `admin_config` | [src/proxy.py:804](../../src/proxy.py#L804) |
+| DELETE | `/admin/config/{key:path}` | `admin_delete_config` | [src/proxy.py:1091](../../src/proxy.py#L1091) |
+| PUT | `/admin/config/{key:path}` | `admin_set_config` | [src/proxy.py:1060](../../src/proxy.py#L1060) |
+| DELETE | `/admin/gateway-auth` | `admin_disable_gateway_auth` | [src/proxy.py:861](../../src/proxy.py#L861) |
+| GET | `/admin/gateway-auth` | `admin_gateway_auth` | [src/proxy.py:826](../../src/proxy.py#L826) |
+| PUT | `/admin/gateway-auth` | `admin_set_gateway_auth` | [src/proxy.py:833](../../src/proxy.py#L833) |
+| POST | `/admin/gateway-auth/inherit` | `admin_inherit_gateway_auth` | [src/proxy.py:878](../../src/proxy.py#L878) |
+| GET | `/admin/health` | `admin_health` | [src/proxy.py:740](../../src/proxy.py#L740) |
+| GET | `/admin/logs` | `admin_logs` | [src/proxy.py:1137](../../src/proxy.py#L1137) |
+| GET | `/admin/models` | `admin_models` | [src/proxy.py:665](../../src/proxy.py#L665) |
+| GET | `/admin/models/{model_id:path}` | `admin_model_detail` | [src/proxy.py:685](../../src/proxy.py#L685) |
+| POST | `/admin/models/{model_id:path}/disable` | `admin_disable_model` | [src/proxy.py:708](../../src/proxy.py#L708) |
+| POST | `/admin/models/{model_id:path}/enable` | `admin_enable_model` | [src/proxy.py:724](../../src/proxy.py#L724) |
+| POST | `/admin/refresh` | `admin_refresh` | [src/proxy.py:1115](../../src/proxy.py#L1115) |
+| GET | `/admin/secrets` | `admin_secrets` | [src/proxy.py:895](../../src/proxy.py#L895) |
+| POST | `/admin/secrets/vault/lock` | `admin_lock_secret_vault` | [src/proxy.py:975](../../src/proxy.py#L975) |
+| POST | `/admin/secrets/vault/setup` | `admin_setup_secret_vault` | [src/proxy.py:905](../../src/proxy.py#L905) |
+| POST | `/admin/secrets/vault/unlock` | `admin_unlock_secret_vault` | [src/proxy.py:941](../../src/proxy.py#L941) |
+| DELETE | `/admin/secrets/{secret_key:path}` | `admin_delete_secret` | [src/proxy.py:1028](../../src/proxy.py#L1028) |
+| PUT | `/admin/secrets/{secret_key:path}` | `admin_set_secret` | [src/proxy.py:997](../../src/proxy.py#L997) |
 | GET | `/admin/ui` | `admin_ui_index` | [src/admin_ui.py:24](../../src/admin_ui.py#L24) |
 | GET | `/admin/ui/` | `admin_ui_trailing_slash` | [src/admin_ui.py:32](../../src/admin_ui.py#L32) |
 | GET | `/admin/ui/{asset_path:path}` | `admin_ui_asset` | [src/admin_ui.py:36](../../src/admin_ui.py#L36) |
-| GET | `/admin/uninstall` | `admin_uninstall_info` | [src/proxy.py:954](../../src/proxy.py#L954) |
-| GET | `/healthz` | `healthz` | [src/proxy.py:547](../../src/proxy.py#L547) |
-| GET | `/readyz` | `readyz` | [src/proxy.py:551](../../src/proxy.py#L551) |
-| POST | `/v1/chat/completions` | `chat_completions` | [src/proxy.py:1122](../../src/proxy.py#L1122) |
-| GET | `/v1/models` | `list_models` | [src/proxy.py:556](../../src/proxy.py#L556) |
+| GET | `/admin/uninstall` | `admin_uninstall_info` | [src/proxy.py:1053](../../src/proxy.py#L1053) |
+| GET | `/healthz` | `healthz` | [src/proxy.py:643](../../src/proxy.py#L643) |
+| GET | `/readyz` | `readyz` | [src/proxy.py:647](../../src/proxy.py#L647) |
+| POST | `/v1/chat/completions` | `chat_completions` | [src/proxy.py:1229](../../src/proxy.py#L1229) |
+| GET | `/v1/models` | `list_models` | [src/proxy.py:652](../../src/proxy.py#L652) |
 
 ## Provider modules
 
@@ -213,3 +216,11 @@ flowchart LR
 | `logging_runtime_enabled` | `bool` | `True` | [src/config.py:109](../../src/config.py#L109) |
 | `logging_runtime_verbosity` | `str` | `'concise'` | [src/config.py:110](../../src/config.py#L110) |
 | `logging_runtime_queue_size` | `int` | `1000` | [src/config.py:111](../../src/config.py#L111) |
+| `gateway_max_request_body_bytes` | `int` | `10 * 1024 * 1024` | [src/config.py:112](../../src/config.py#L112) |
+| `gateway_max_upstream_response_bytes` | `int` | `16 * 1024 * 1024` | [src/config.py:113](../../src/config.py#L113) |
+| `gateway_max_sse_event_bytes` | `int` | `1024 * 1024` | [src/config.py:114](../../src/config.py#L114) |
+| `gateway_stream_idle_timeout_seconds` | `int` | `60` | [src/config.py:115](../../src/config.py#L115) |
+| `gateway_stream_total_timeout_seconds` | `int` | `600` | [src/config.py:116](../../src/config.py#L116) |
+| `security_auth_failure_limit` | `int` | `5` | [src/config.py:117](../../src/config.py#L117) |
+| `security_auth_failure_window_seconds` | `int` | `300` | [src/config.py:118](../../src/config.py#L118) |
+| `security_auth_throttle_max_entries` | `int` | `4096` | [src/config.py:119](../../src/config.py#L119) |

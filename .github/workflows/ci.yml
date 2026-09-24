@@ -11,8 +11,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: "3.11"
           cache: pip
@@ -39,7 +39,7 @@ jobs:
   validate-installers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: Check Docker secret exclusions
         run: |
           grep -Fxq '.env' .dockerignore
@@ -156,9 +156,18 @@ jobs:
   installer-runtime-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: Build local image for installer runtime smoke
         run: docker build -t freelunch:test .
+      - name: Audit local image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: freelunch:test
+          format: table
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
       - name: Run shell installer with real Docker daemon
         env:
           HOME: ${{ runner.temp }}/home-installer
@@ -350,8 +359,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -364,15 +373,117 @@ jobs:
         run: pytest tests --cov=src --cov-report=term-missing --cov-report=xml --durations=10
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-xml
           path: coverage.xml
 
+  native-runtime-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.11"
+      - name: Install base dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Start and smoke-test native app
+        env:
+          APP_ENV: dev
+          OPENROUTER_DEV_STUB_ENABLED: "true"
+        run: |
+          native_dir="$RUNNER_TEMP/freelunch-native"
+          mkdir -p "$native_dir"
+          cat > "$native_dir/config.yaml" <<'EOF'
+          app:
+            env: dev
+          providers:
+            enabled:
+              - openrouter
+            openrouter:
+              enabled: true
+              discovery_enabled: true
+              inference_enabled: true
+              dev_stub_enabled: true
+              active_probe_enabled: false
+          discovery:
+            leaderboard:
+              chatbot_arena:
+                enabled: false
+              open_llm:
+                enabled: false
+          health:
+            startup_probe_limit: 0
+          EOF
+          export DATABASE_URL="$native_dir/freelunch.db"
+          export PYTHONPATH="$GITHUB_WORKSPACE"
+          cd "$native_dir"
+          python -m uvicorn src.main:app --host 127.0.0.1 --port 18081 > "$native_dir/server.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            status=$?
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              cat "$native_dir/server.log"
+            fi
+          }
+          trap cleanup EXIT
+          python - <<'PY'
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+
+          base_url = "http://127.0.0.1:18081"
+          last_error = None
+
+          def request(path, *, payload=None):
+              headers = {}
+              data = None
+              if payload is not None:
+                  headers["Content-Type"] = "application/json"
+                  data = json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(base_url + path, headers=headers, data=data)
+              try:
+                  with urllib.request.urlopen(req, timeout=5) as response:
+                      return response.status, json.loads(response.read())
+              except urllib.error.HTTPError as exc:
+                  return exc.code, exc.read().decode("utf-8", errors="replace")
+
+          for _ in range(60):
+              try:
+                  status, body = request("/healthz")
+                  if status == 200 and body.get("status") == "ok":
+                      break
+                  last_error = RuntimeError(f"/healthz returned {status}: {body}")
+              except Exception as exc:
+                  last_error = exc
+              time.sleep(1)
+          else:
+              raise SystemExit(f"native app did not become healthy: {last_error}")
+
+          status, body = request("/readyz")
+          if status != 200 or body.get("status") != "ready":
+              raise SystemExit(f"native app is not ready: {status} {body}")
+
+          status, body = request(
+              "/v1/chat/completions",
+              payload={
+                  "model": "auto",
+                  "messages": [{"role": "user", "content": "native smoke"}],
+                  "max_tokens": 1,
+              },
+          )
+          if status != 200 or "Echo: native smoke" not in str(body):
+              raise SystemExit(f"native chat smoke failed: {status} {body}")
+          PY
+
   docker-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: Prepare smoke config
         run: |
           cat > "$RUNNER_TEMP/smoke-config.yaml" <<'EOF'

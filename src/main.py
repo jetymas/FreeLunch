@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+import yaml
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from src.admin_ui import build_admin_ui_router
 from src.config import Settings
@@ -23,6 +26,24 @@ from src.secret_store import GatewayAuthConfig, ManagedSecretStore, SecretVaultC
 from src.tokens import shutdown_tokenizer_preloads
 
 logger = get_logger(__name__)
+
+
+def _api_docs_enabled() -> bool:
+    """Keep interactive API documentation opt-in for production deployments."""
+    configured = os.getenv("API_DOCS_ENABLED")
+    if configured is not None:
+        return configured.strip().lower() in {"1", "true", "yes", "on"}
+    app_env = os.getenv("APP_ENV")
+    if app_env is None:
+        config_path = Path("config.yaml")
+        if config_path.exists():
+            with config_path.open(encoding="utf-8") as config_file:
+                config = yaml.safe_load(config_file) or {}
+            app_section = config.get("app", {}) if isinstance(config, dict) else {}
+            app_env = str(app_section.get("env", "dev")) if isinstance(app_section, dict) else "dev"
+        else:
+            app_env = "dev"
+    return app_env.strip().lower() not in {"prod", "production"}
 
 
 def _sync_registry_runtime_gating(settings: Settings, registry: ProviderRegistry) -> None:
@@ -394,6 +415,26 @@ async def lifespan(app: FastAPI):
         shutdown_runtime_logging()
 
 
-app = FastAPI(title="FreeLunch", version="0.4.2", lifespan=lifespan)
+_docs_enabled = _api_docs_enabled()
+app = FastAPI(
+    title="FreeLunch",
+    version="0.4.2",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
+
+
+@app.middleware("http")
+async def add_browser_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    return response
+
+
 app.include_router(build_router())
 app.include_router(build_admin_ui_router())

@@ -22,8 +22,7 @@ FreeLunch is deliberately conservative:
 - Prefer clear, low-overhead designs over abstraction sprawl or concurrency-heavy
   cleverness.
 - Keep persisted timestamps as UTC ISO 8601 with a `Z` suffix.
-- Preserve hard request constraints even when adding ranking or classification
-  behavior.
+- Preserve hard request constraints when changing ranking behavior.
 
 ## Local development
 
@@ -98,7 +97,7 @@ protection.
 Runtime logs are queue-backed process events and are separate from durable
 SQLite request telemetry. If logging changes, keep the `runtime_logging` admin
 health payload, config example, and tests aligned. Never put raw prompts,
-provider secrets, or classifier payloads into logs or durable telemetry.
+provider secrets, or other request payloads into logs or durable telemetry.
 
 ### Token estimation
 

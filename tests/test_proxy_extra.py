@@ -22,7 +22,15 @@ class _FakeRequest:
         self._disconnections = list(disconnections)
         fallback = disconnections[-1] if disconnections else False
         self._fallback = fallback
-        self.app = SimpleNamespace(state=SimpleNamespace(settings=object()))
+        self.app = SimpleNamespace(
+            state=SimpleNamespace(
+                settings=SimpleNamespace(
+                    gateway_stream_total_timeout_seconds=600,
+                    gateway_stream_idle_timeout_seconds=60,
+                    gateway_max_sse_event_bytes=1024 * 1024,
+                )
+            )
+        )
 
     async def is_disconnected(self) -> bool:
         if self._disconnections:

@@ -36,6 +36,16 @@ logging:
 database:
   path: "custom.db"
   busy_timeout_ms: 3210
+
+security:
+  max_request_body_bytes: 2048
+  max_upstream_response_bytes: 4096
+  max_sse_event_bytes: 5120
+  stream_idle_timeout_seconds: 30
+  stream_total_timeout_seconds: 300
+  auth_failure_limit: 7
+  auth_failure_window_seconds: 90
+  auth_throttle_max_entries: 123
 """.strip(),
         encoding="utf-8",
     )
@@ -54,6 +64,15 @@ database:
     assert settings.logging_runtime_enabled is True
     assert settings.logging_runtime_verbosity == "debug"
     assert settings.logging_runtime_queue_size == 321
+    assert settings.gateway_max_request_body_bytes == 2048
+    assert settings.gateway_max_upstream_response_bytes == 4096
+    assert settings.gateway_max_sse_event_bytes == 5120
+    assert settings.gateway_stream_idle_timeout_seconds == 30
+    assert settings.gateway_stream_total_timeout_seconds == 300
+    assert settings.security_auth_failure_limit == 7
+    assert settings.security_auth_failure_window_seconds == 90
+    assert settings.security_auth_throttle_max_entries == 123
+    assert settings.public_settings()["security.auth_failure_limit"] == 7
     assert settings.public_settings()["database.busy_timeout_ms"] == 3210
 
 

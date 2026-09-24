@@ -122,6 +122,8 @@ class OpenAICompatibleAdapter:
     default_request_timeout_seconds = 60
     default_discovery_timeout_seconds = 15
     max_retries = 3
+    max_response_bytes = 16 * 1024 * 1024
+    max_sse_event_bytes = 1024 * 1024
 
     def __init__(
         self,
@@ -163,6 +165,7 @@ class OpenAICompatibleAdapter:
             "/models",
             timeout_seconds=self.default_discovery_timeout_seconds,
         )
+        self._ensure_response_size(response.content)
         payload = self._parse_json(response.content)
         rows = payload.get("data")
         if not isinstance(rows, list):
@@ -324,26 +327,73 @@ class OpenAICompatibleAdapter:
                 stream=True,
             )
             if response.status_code >= 400:
-                raw_body = await response.aread()
+                error_chunks: list[bytes] = []
+                error_size = 0
+                async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                    error_size += len(chunk)
+                    if error_size > self.max_response_bytes:
+                        await response.aclose()
+                        await client.aclose()
+                        raise ProviderRetryableError(
+                            "provider response exceeded size limit",
+                            category="PROVIDER_UNAVAILABLE",
+                        )
+                    error_chunks.append(chunk)
+                raw_body = b"".join(error_chunks)
                 await response.aclose()
                 await client.aclose()
                 self._raise_for_response(response.status_code, raw_body)
-        except Exception:
+        except BaseException:
             await client.aclose()
             raise
 
         async def event_stream() -> AsyncGenerator[bytes, None]:
             pending_lines: list[str] = []
+            pending_bytes = 0
+            line_buffer = bytearray()
             try:
-                async for line in response.aiter_lines():
-                    if not line:
-                        if pending_lines:
-                            yield ("\n".join(pending_lines) + "\n\n").encode("utf-8")
-                            pending_lines.clear()
-                        continue
-                    if line.startswith(":"):
-                        continue
-                    pending_lines.append(line)
+                async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                    line_buffer.extend(chunk)
+                    while b"\n" in line_buffer:
+                        line, _, remainder = line_buffer.partition(b"\n")
+                        line_buffer = bytearray(remainder)
+                        if line.endswith(b"\r"):
+                            line = line[:-1]
+                        if len(line) > self.max_sse_event_bytes:
+                            raise ProviderRetryableError(
+                                "provider SSE event exceeded size limit",
+                                category="PROVIDER_UNAVAILABLE",
+                            )
+                        if not line:
+                            if pending_lines:
+                                yield ("\n".join(pending_lines) + "\n\n").encode("utf-8")
+                                pending_lines.clear()
+                                pending_bytes = 0
+                            continue
+                        decoded = line.decode("utf-8", errors="replace")
+                        if decoded.startswith(":"):
+                            continue
+                        pending_bytes += len(line) + 1
+                        if pending_bytes > self.max_sse_event_bytes:
+                            raise ProviderRetryableError(
+                                "provider SSE event exceeded size limit",
+                                category="PROVIDER_UNAVAILABLE",
+                            )
+                        pending_lines.append(decoded)
+                    if len(line_buffer) > self.max_sse_event_bytes:
+                        raise ProviderRetryableError(
+                            "provider SSE event exceeded size limit",
+                            category="PROVIDER_UNAVAILABLE",
+                        )
+                if line_buffer:
+                    final_line = bytes(line_buffer).removesuffix(b"\r")
+                    pending_bytes += len(final_line) + 1
+                    if pending_bytes > self.max_sse_event_bytes:
+                        raise ProviderRetryableError(
+                            "provider SSE event exceeded size limit",
+                            category="PROVIDER_UNAVAILABLE",
+                        )
+                    pending_lines.append(final_line.decode("utf-8", errors="replace"))
                 if pending_lines:
                     yield ("\n".join(pending_lines) + "\n\n").encode("utf-8")
             except httpx.TimeoutException as exc:
@@ -361,6 +411,12 @@ class OpenAICompatibleAdapter:
                 await client.aclose()
 
         return StreamResult(events=event_stream())
+
+    def _ensure_response_size(self, content: bytes) -> None:
+        if len(content) > self.max_response_bytes:
+            raise ProviderRetryableError(
+                "provider response exceeded size limit", category="PROVIDER_UNAVAILABLE"
+            )
 
     async def probe(
         self, model: str, *, max_tokens: int = 1, timeout_seconds: int = 15
@@ -417,12 +473,40 @@ class OpenAICompatibleAdapter:
         last_error: Exception | None = None
         for _attempt in range(max(int(self.max_retries), 1)):
             try:
-                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                    response = await client.request(
+                async with (
+                    httpx.AsyncClient(timeout=timeout_seconds) as client,
+                    client.stream(
                         method,
                         f"{self.api_base}{path}",
                         headers=self._headers(),
                         json=json_body,
+                    ) as upstream,
+                ):
+                    content_length = upstream.headers.get("content-length")
+                    if (
+                        content_length
+                        and content_length.isdigit()
+                        and int(content_length) > self.max_response_bytes
+                    ):
+                        raise ProviderRetryableError(
+                            "provider response exceeded size limit",
+                            category="PROVIDER_UNAVAILABLE",
+                        )
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in upstream.aiter_bytes():
+                        size += len(chunk)
+                        if size > self.max_response_bytes:
+                            raise ProviderRetryableError(
+                                "provider response exceeded size limit",
+                                category="PROVIDER_UNAVAILABLE",
+                            )
+                        chunks.append(chunk)
+                    response = httpx.Response(
+                        upstream.status_code,
+                        headers=upstream.headers,
+                        content=b"".join(chunks),
+                        request=upstream.request,
                     )
                 if response.status_code >= 400:
                     self._raise_for_response(response.status_code, response.content)

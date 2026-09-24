@@ -109,6 +109,14 @@ class Settings:
     logging_runtime_enabled: bool = True
     logging_runtime_verbosity: str = "concise"
     logging_runtime_queue_size: int = 1000
+    gateway_max_request_body_bytes: int = 10 * 1024 * 1024
+    gateway_max_upstream_response_bytes: int = 16 * 1024 * 1024
+    gateway_max_sse_event_bytes: int = 1024 * 1024
+    gateway_stream_idle_timeout_seconds: int = 60
+    gateway_stream_total_timeout_seconds: int = 600
+    security_auth_failure_limit: int = 5
+    security_auth_failure_window_seconds: int = 300
+    security_auth_throttle_max_entries: int = 4096
 
     def __post_init__(self) -> None:
         self.provider_enabled = self._coerce_bool_mapping(self.provider_enabled)
@@ -166,6 +174,7 @@ class Settings:
         health = config_data.get("health", {})
         ranking = config_data.get("ranking", {})
         logging = config_data.get("logging", {})
+        security = config_data.get("security", {})
         database = config_data.get("database", {})
         providers = config_data.get("providers", {})
         provider_sections = cls._coerce_provider_sections(providers)
@@ -297,6 +306,28 @@ class Settings:
             logging_runtime_enabled=bool(logging.get("runtime_enabled", True)),
             logging_runtime_verbosity=str(logging.get("runtime_verbosity", "concise")),
             logging_runtime_queue_size=max(int(logging.get("runtime_queue_size", 1000)), 1),
+            gateway_max_request_body_bytes=max(
+                int(security.get("max_request_body_bytes", 10 * 1024 * 1024)), 1024
+            ),
+            gateway_max_upstream_response_bytes=max(
+                int(security.get("max_upstream_response_bytes", 16 * 1024 * 1024)), 1024
+            ),
+            gateway_max_sse_event_bytes=max(
+                int(security.get("max_sse_event_bytes", 1024 * 1024)), 1024
+            ),
+            gateway_stream_idle_timeout_seconds=max(
+                int(security.get("stream_idle_timeout_seconds", 60)), 1
+            ),
+            gateway_stream_total_timeout_seconds=max(
+                int(security.get("stream_total_timeout_seconds", 600)), 1
+            ),
+            security_auth_failure_limit=max(int(security.get("auth_failure_limit", 5)), 1),
+            security_auth_failure_window_seconds=max(
+                int(security.get("auth_failure_window_seconds", 300)), 1
+            ),
+            security_auth_throttle_max_entries=max(
+                int(security.get("auth_throttle_max_entries", 4096)), 1
+            ),
         )
 
     def apply_overrides(self, overrides: dict[str, Any]) -> None:
@@ -551,6 +582,14 @@ class Settings:
             "gateway.log_level": self.gateway_log_level,
             "database.path": self.database_url,
             "database.busy_timeout_ms": self.database_busy_timeout_ms,
+            "security.max_request_body_bytes": self.gateway_max_request_body_bytes,
+            "security.max_upstream_response_bytes": self.gateway_max_upstream_response_bytes,
+            "security.max_sse_event_bytes": self.gateway_max_sse_event_bytes,
+            "security.stream_idle_timeout_seconds": self.gateway_stream_idle_timeout_seconds,
+            "security.stream_total_timeout_seconds": self.gateway_stream_total_timeout_seconds,
+            "security.auth_failure_limit": self.security_auth_failure_limit,
+            "security.auth_failure_window_seconds": self.security_auth_failure_window_seconds,
+            "security.auth_throttle_max_entries": self.security_auth_throttle_max_entries,
             "providers.enabled": list(self.providers_enabled),
             "providers.openrouter.dev_stub_enabled": self.openrouter_dev_stub_enabled,
             "discovery.interval_minutes": self.discovery_interval_minutes,

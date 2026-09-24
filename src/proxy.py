@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
@@ -42,9 +44,75 @@ from src.secret_store import (
     unlock_vault,
     verify_gateway_auth_token,
 )
+from src.security_throttle import FailureThrottle
 from src.tokens import estimate_required_tokens, request_contains_vision
 
 logger = get_logger(__name__)
+_auth_throttle_init_lock = threading.Lock()
+
+
+def _auth_throttle(request: Request, category: str) -> tuple[FailureThrottle, str]:
+    settings = request.app.state.settings
+    with _auth_throttle_init_lock:
+        throttles = getattr(request.app.state, "auth_failure_throttles", None)
+        if throttles is None:
+            throttles = {}
+            request.app.state.auth_failure_throttles = throttles
+        throttle = throttles.get(category)
+        if throttle is None:
+            throttle = FailureThrottle(
+                settings.security_auth_failure_limit,
+                settings.security_auth_failure_window_seconds,
+                settings.security_auth_throttle_max_entries,
+            )
+            throttles[category] = throttle
+    # Use the direct socket peer only. Forwarded headers are untrusted input.
+    client_key = request.client.host if request.client is not None else "unknown"
+    return throttle, client_key
+
+
+def _check_auth_throttle(request: Request, category: str) -> tuple[FailureThrottle, str]:
+    throttle, client_key = _auth_throttle(request, category)
+    retry_after = throttle.retry_after(client_key)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="too many failed authentication attempts",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return throttle, client_key
+
+
+def _record_auth_failure(throttle: FailureThrottle, client_key: str) -> None:
+    throttle.fail(client_key)
+    retry_after = throttle.retry_after(client_key)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="too many failed authentication attempts",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+async def _read_chat_payload(request: Request) -> dict:
+    limit = request.app.state.settings.gateway_max_request_body_bytes
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > limit:
+        raise HTTPException(status_code=413, detail="request body too large")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise HTTPException(status_code=413, detail="request body too large")
+        chunks.append(chunk)
+    try:
+        payload = json.loads(b"".join(chunks))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid JSON request body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    return payload
 
 
 def _candidate_token_observation(
@@ -77,18 +145,24 @@ def _check_gateway_auth(request: Request, authorization: str | None) -> None:
     auth_state = getattr(request.app.state, "gateway_auth", {})
     if not auth_state or not auth_state.get("enabled"):
         return
+    throttle, client_key = _check_auth_throttle(request, "gateway")
     if not authorization or not authorization.startswith("Bearer "):
+        _record_auth_failure(throttle, client_key)
         raise HTTPException(status_code=401, detail="missing bearer token")
     token = authorization.split(" ", 1)[1]
     source = str(auth_state.get("source", "disabled"))
     if source == "env":
         env_key = auth_state.get("env_key")
         if not isinstance(env_key, str) or not hmac.compare_digest(token, env_key):
+            _record_auth_failure(throttle, client_key)
             raise HTTPException(status_code=401, detail="invalid bearer token")
+        throttle.reset(client_key)
         return
     config = auth_state.get("config")
     if source == "managed" and config is not None and verify_gateway_auth_token(token, config):
+        throttle.reset(client_key)
         return
+    _record_auth_failure(throttle, client_key)
     if source == "managed":
         raise HTTPException(status_code=401, detail="invalid bearer token")
     raise HTTPException(status_code=401, detail="invalid bearer token")
@@ -443,7 +517,25 @@ async def _relay_stream(
         if not await request.is_disconnected():
             yield first_event
 
-        async for raw_event in stream_result.events:
+        stream_deadline = start + request.app.state.settings.gateway_stream_total_timeout_seconds
+        while True:
+            remaining = stream_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("stream total deadline exceeded")
+            try:
+                raw_event = await asyncio.wait_for(
+                    anext(stream_result.events),
+                    timeout=min(
+                        remaining,
+                        request.app.state.settings.gateway_stream_idle_timeout_seconds,
+                    ),
+                )
+            except StopAsyncIteration:
+                break
+            if len(raw_event) > request.app.state.settings.gateway_max_sse_event_bytes:
+                raise ProviderRetryableError(
+                    "provider SSE event exceeded size limit", category="PROVIDER_UNAVAILABLE"
+                )
             if await request.is_disconnected():
                 break
             payload, event_is_done = _parse_stream_event(raw_event)
@@ -463,6 +555,10 @@ async def _relay_stream(
             yield raw_event
     except ProviderError as exc:
         stream_error = exc
+    except TimeoutError:
+        stream_error = ProviderRetryableError(
+            "provider stream deadline exceeded", category="PROVIDER_UNAVAILABLE"
+        )
     except Exception as exc:
         stream_error = ProviderRetryableError(
             str(exc)[:500],
@@ -852,12 +948,15 @@ def build_router() -> APIRouter:
         if vault_config is None:
             raise HTTPException(status_code=409, detail="secret vault is not configured")
 
+        throttle, client_key = _check_auth_throttle(request, "vault")
         password = _parse_secret_password(payload)
         try:
             secret_store = unlock_vault(password, vault_config)
         except SecretStorePasswordError as exc:
+            _record_auth_failure(throttle, client_key)
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+        throttle.reset(client_key)
         request.app.state.secret_store = secret_store
         request.app.state.reload_settings()
         runtime_log(
@@ -1118,12 +1217,19 @@ def build_router() -> APIRouter:
             },
         }
 
-    @router.post("/v1/chat/completions")
-    async def chat_completions(
-        payload: dict, request: Request, authorization: str | None = Header(default=None)
-    ):
+    @router.post(
+        "/v1/chat/completions",
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {"application/json": {"schema": {"type": "object"}}},
+            }
+        },
+    )
+    async def chat_completions(request: Request, authorization: str | None = Header(default=None)):
         _check_gateway_auth(request, authorization)
         _readiness_guard(request)
+        payload = await _read_chat_payload(request)
 
         db = request.app.state.db
         registry = request.app.state.registry
@@ -1187,6 +1293,8 @@ def build_router() -> APIRouter:
             provider_name = candidate["provider_id"]
             model_name = candidate["provider_model_id"]
             provider = registry.get(provider_name)
+            provider.max_response_bytes = settings.gateway_max_upstream_response_bytes
+            provider.max_sse_event_bytes = settings.gateway_max_sse_event_bytes
             token_observation = token_observations.setdefault(
                 model_id,
                 _candidate_token_observation(
@@ -1228,12 +1336,31 @@ def build_router() -> APIRouter:
                             ),
                         )
 
-                    stream_result = await provider.stream_chat_completions(
-                        payload, model=model_name
+                    stream_remaining = settings.gateway_stream_total_timeout_seconds - (
+                        time.monotonic() - start
                     )
-                    first_event = await anext(stream_result.events)
-                    while _is_comment_event(first_event):
-                        first_event = await anext(stream_result.events)
+                    if stream_remaining <= 0:
+                        raise TimeoutError("provider stream total deadline exceeded")
+                    stream_result = await asyncio.wait_for(
+                        provider.stream_chat_completions(payload, model=model_name),
+                        timeout=stream_remaining,
+                    )
+                    deadline = start + settings.gateway_stream_total_timeout_seconds
+                    while True:
+                        first_event = await asyncio.wait_for(
+                            anext(stream_result.events),
+                            timeout=min(
+                                settings.gateway_stream_idle_timeout_seconds,
+                                max(deadline - time.monotonic(), 0.001),
+                            ),
+                        )
+                        if len(first_event) > settings.gateway_max_sse_event_bytes:
+                            raise ProviderRetryableError(
+                                "provider SSE event exceeded size limit",
+                                category="PROVIDER_UNAVAILABLE",
+                            )
+                        if not _is_comment_event(first_event):
+                            break
                     runtime_log(
                         logger,
                         "request.stream.started",

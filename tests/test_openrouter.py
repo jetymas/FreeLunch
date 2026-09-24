@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -43,6 +44,10 @@ class _RetryingClient:
             raise httpx.ReadTimeout("timed out")
         return _response(200, json_body={"ok": True})
 
+    @asynccontextmanager
+    async def stream(self, method, url, headers=None, json=None):
+        yield await self.request(method, url, headers=headers, json=json)
+
 
 class _Always429Client:
     attempts = 0
@@ -68,6 +73,10 @@ class _Always429Client:
             },
         )
 
+    @asynccontextmanager
+    async def stream(self, method, url, headers=None, json=None):
+        yield await self.request(method, url, headers=headers, json=json)
+
 
 class _TimeoutStreamResponse:
     def __init__(self):
@@ -76,6 +85,12 @@ class _TimeoutStreamResponse:
     async def aiter_lines(self):
         yield 'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
         yield ""
+        raise httpx.ReadTimeout("stream stalled")
+
+    async def aiter_bytes(self, chunk_size: int = 65536):
+        del chunk_size
+        yield b'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n'
+        yield b"\n"
         raise httpx.ReadTimeout("stream stalled")
 
     async def aclose(self):
@@ -666,6 +681,10 @@ async def test_request_with_retries_retries_retryable_response_then_succeeds(mon
         async def request(self, method, url, headers=None, json=None):
             return responses.pop(0)
 
+        @asynccontextmanager
+        async def stream(self, method, url, headers=None, json=None):
+            yield await self.request(method, url, headers=headers, json=json)
+
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
     response = await adapter._request_with_retries("GET", "/models", timeout_seconds=15)
@@ -694,6 +713,10 @@ async def test_request_with_retries_raises_retryable_timeout_after_exhausting_at
         async def request(self, method, url, headers=None, json=None):
             raise httpx.TimeoutException("timed out")
 
+        @asynccontextmanager
+        async def stream(self, method, url, headers=None, json=None):
+            yield await self.request(method, url, headers=headers, json=json)
+
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
     with pytest.raises(ProviderRetryableError) as exc_info:
@@ -721,6 +744,10 @@ async def test_request_with_retries_raises_retryable_transport_error_after_exhau
 
         async def request(self, method, url, headers=None, json=None):
             raise httpx.HTTPError("socket closed")
+
+        @asynccontextmanager
+        async def stream(self, method, url, headers=None, json=None):
+            yield await self.request(method, url, headers=headers, json=json)
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
@@ -755,6 +782,10 @@ async def test_request_with_retries_does_not_retry_fatal_provider_error(monkeypa
                 json_body={"error": {"message": "invalid api key", "code": "invalid_api_key"}},
             )
 
+        @asynccontextmanager
+        async def stream(self, method, url, headers=None, json=None):
+            yield await self.request(method, url, headers=headers, json=json)
+
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
     with pytest.raises(ProviderFatalError) as exc_info:
@@ -782,6 +813,15 @@ class _FakeStreamingResponse:
     async def aiter_lines(self) -> AsyncIterator[str]:
         for line in self._lines:
             yield line
+        if self._line_error is not None:
+            raise self._line_error
+
+    async def aiter_bytes(self, chunk_size: int = 65536) -> AsyncIterator[bytes]:
+        del chunk_size
+        if self.content:
+            yield self.content
+        for line in self._lines:
+            yield line.encode("utf-8") + b"\n"
         if self._line_error is not None:
             raise self._line_error
 

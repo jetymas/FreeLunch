@@ -1,13 +1,52 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import threading
 
 import pytest
 
+from src import tokens as tokens_module
 from src.config import Settings
 from src.db import Database, utc_now_iso
 from src.health import run_health_checks
 from src.providers.registry import ProviderRegistry
+
+
+def test_concurrent_tokenizer_preload_schedules_one_load(monkeypatch) -> None:
+    """Concurrent discovery calls should share one pending tokenizer load."""
+
+    class CountingExecutor:
+        def __init__(self) -> None:
+            self.submissions = 0
+            self.future: concurrent.futures.Future[object | None] = concurrent.futures.Future()
+
+        def submit(self, *args: object) -> concurrent.futures.Future[object | None]:
+            del args
+            self.submissions += 1
+            return self.future
+
+    hint = "qwen/qwen2.5-7b-instruct:free"
+    executor = CountingExecutor()
+    barrier = threading.Barrier(16)
+    tokens_module._clear_hf_tokenizer_cache()
+    monkeypatch.setattr(tokens_module, "AutoTokenizer", object())
+    monkeypatch.setattr(tokens_module, "_ensure_hf_tokenizer_executor", lambda: executor)
+
+    def schedule() -> bool:
+        barrier.wait(timeout=5)
+        return tokens_module.schedule_tokenizer_preload(hint)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(lambda _: schedule(), range(16)))
+
+        assert results.count(True) == 1
+        assert results.count(False) == 15
+        assert executor.submissions == 1
+    finally:
+        executor.future.cancel()
+        tokens_module._clear_hf_tokenizer_cache()
 
 
 def _insert_model(

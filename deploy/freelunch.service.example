@@ -1,0 +1,21 @@
+[Unit]
+Description=FreeLunch local LLM gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace both paths with the absolute path to your FreeLunch checkout.
+WorkingDirectory=/absolute/path/to/FreeLunch
+EnvironmentFile=%h/.config/freelunch/freelunch.env
+Environment=APP_ENV=prod
+Environment=DATABASE_URL=%h/.local/share/freelunch/freelunch.db
+ExecStart=/absolute/path/to/FreeLunch/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target

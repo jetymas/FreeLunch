@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -152,6 +153,17 @@ class _FakeStreamingResponse:
         if self._line_error is not None:
             raise self._line_error
 
+    async def aiter_bytes(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
+        """Expose response bytes like httpx, including errors raised mid-body."""
+        payload = self.content or "\n".join(self._lines).encode()
+        if isinstance(payload, str):
+            payload = payload.encode()
+        size = chunk_size or max(len(payload), 1)
+        for offset in range(0, len(payload), size):
+            yield payload[offset : offset + size]
+        if self._line_error is not None:
+            raise self._line_error
+
     async def aread(self) -> bytes:
         return self.content
 
@@ -169,6 +181,10 @@ class _FakeStreamingClient:
 
     async def send(self, request, stream=False):
         return self.response
+
+    @asynccontextmanager
+    async def stream(self, method, url, headers=None, json=None):
+        yield self.response
 
     async def aclose(self) -> None:
         self.closed = True
@@ -282,6 +298,18 @@ async def test_request_with_retries_retries_retryable_status_errors(monkeypatch)
                 )
             return _response(200, json_body={"ok": True})
 
+        @asynccontextmanager
+        async def stream(self, method, url, headers=None, json=None):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                yield _response(
+                    503,
+                    json_body={"error": {"message": "try again", "code": "server_error"}},
+                )
+            else:
+                yield _response(200, json_body={"ok": True})
+
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
     response = await adapter._request_with_retries("GET", "/models", timeout_seconds=15)
@@ -313,8 +341,9 @@ async def test_request_with_retries_raises_last_retryable_error_after_exhaustion
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def request(self, method, url, headers=None, json=None):
-            return _response(
+        @asynccontextmanager
+        async def stream(self, method, url, headers=None, json=None):
+            yield _response(
                 503,
                 json_body={"error": {"message": "upstream unavailable", "code": "server_error"}},
             )

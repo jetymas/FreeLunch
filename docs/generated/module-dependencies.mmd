@@ -17,6 +17,7 @@ flowchart LR
     node_src_runtime_logging["src.runtime_logging"]
     node_src_scheduler["src.scheduler"]
     node_src_secret_store["src.secret_store"]
+    node_src_security_throttle["src.security_throttle"]
     node_src_tokens["src.tokens"]
     node_src_benchmarks --> node_src_db
     node_src_benchmarks --> node_src_runtime_logging
@@ -46,6 +47,7 @@ flowchart LR
     node_src_proxy --> node_src_routing
     node_src_proxy --> node_src_runtime_logging
     node_src_proxy --> node_src_secret_store
+    node_src_proxy --> node_src_security_throttle
     node_src_proxy --> node_src_tokens
     node_src_ranking --> node_src_config
     node_src_ranking --> node_src_db
