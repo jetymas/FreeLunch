@@ -17,6 +17,32 @@ fi
 [ ! -L "$DATA_DIR" ] || { echo "refusing symlinked data directory: $DATA_DIR" >&2; exit 1; }
 [ ! -L "$MARKER" ] || { echo "refusing symlinked ownership marker: $MARKER" >&2; exit 1; }
 
+case "${1:-}" in
+    ''|--restore-host) ;;
+    *) echo "unsupported ownership migration mode" >&2; exit 1 ;;
+esac
+
+if [ "${1:-}" = "--restore-host" ]; then
+    [ "${FREELUNCH_ALLOW_DATA_CHOWN:-0}" = "1" ] || {
+        echo "host ownership restore requires Linux data chown opt-in" >&2
+        exit 1
+    }
+    case "${FREELUNCH_RESTORE_HOST_UID:-}" in
+        ''|*[!0-9]*) echo "invalid host UID" >&2; exit 1 ;;
+    esac
+    case "${FREELUNCH_RESTORE_HOST_GID:-}" in
+        ''|*[!0-9]*) echo "invalid host GID" >&2; exit 1 ;;
+    esac
+    if find "$DATA_DIR" -xdev ! -type f ! -type d ! -type l -print -quit | grep -q .; then
+        echo "refusing unexpected special files in $DATA_DIR" >&2
+        exit 1
+    fi
+    find "$DATA_DIR" -xdev \( -type f -o -type d \) \
+        -exec chown "$FREELUNCH_RESTORE_HOST_UID:$FREELUNCH_RESTORE_HOST_GID" {} +
+    chmod 0700 "$DATA_DIR"
+    exit 0
+fi
+
 if [ "${FREELUNCH_ALLOW_DATA_CHOWN:-0}" = "1" ]; then
     if [ ! -e "$MARKER" ]; then
         if find "$DATA_DIR" -xdev ! -type f ! -type d ! -type l -print -quit | grep -q .; then

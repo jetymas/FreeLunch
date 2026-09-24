@@ -132,7 +132,9 @@ Check `/healthz`, `/readyz`, and a small request before discarding backups.
 `docker compose down` removes the service while keeping the bind-mounted data
 and local configuration. Remove those files only after choosing a retention
 policy. Installer deployments store the same kinds of files under their install
-directory; inspect the uninstall script before removing that directory.
+directory. On Linux, the shell uninstaller restores data ownership to the host
+user before deleting that directory; if the restore fails, it leaves the data
+in place. Inspect the uninstall script before removing an installation.
 
 Configure at least one real provider key. The OpenRouter no-key stub is allowed
 only with `APP_ENV=dev` and explicit `providers.openrouter.dev_stub_enabled=true`.

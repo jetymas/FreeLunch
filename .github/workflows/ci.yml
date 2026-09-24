@@ -81,7 +81,7 @@ jobs:
               shift
               while [ "$#" -gt 0 ]; do
                 case "$1" in
-                  version|up|down)
+                  version|up|down|stop|run)
                     exit 0
                     ;;
                   --project-directory|-f)
@@ -502,7 +502,7 @@ jobs:
       - name: Build image
         run: docker build -t freelunch:test .
       - name: Run smoke container (dev stub + auth)
-        run: docker run -d --rm --name freelunch-smoke -p 8000:8000 -e APP_ENV=dev -e OPENROUTER_DEV_STUB_ENABLED=true -e GATEWAY_API_KEY=ci-smoke-key -e STARTUP_PROBE_LIMIT=0 -v "$RUNNER_TEMP/smoke-config.yaml:/app/config.yaml:ro" freelunch:test
+        run: docker run -d --name freelunch-smoke -p 8000:8000 -e APP_ENV=dev -e OPENROUTER_DEV_STUB_ENABLED=true -e GATEWAY_API_KEY=ci-smoke-key -e STARTUP_PROBE_LIMIT=0 -v "$RUNNER_TEMP/smoke-config.yaml:/app/config.yaml:ro" freelunch:test
       - name: Smoke test auth + readiness + models + tiny chat (non-stream + stream)
         run: |
           python - <<'PY'
@@ -640,7 +640,7 @@ jobs:
           PY
       - name: Dump container logs on failure
         if: failure()
-        run: docker logs freelunch-smoke
+        run: docker logs freelunch-smoke || true
       - name: Stop smoke container
         if: always()
-        run: docker stop freelunch-smoke
+        run: docker rm -f freelunch-smoke || true

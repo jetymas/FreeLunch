@@ -2,6 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 ENV FREELUNCH_UID=10001
+ENV DATABASE_URL=/app/data/freelunch.db
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip uninstall -y setuptools wheel
