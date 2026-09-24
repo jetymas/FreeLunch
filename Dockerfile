@@ -3,7 +3,8 @@ FROM python:3.11-slim
 WORKDIR /app
 ENV FREELUNCH_UID=10001
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y setuptools wheel
 
 COPY . .
 RUN groupadd --gid 10001 freelunch \
