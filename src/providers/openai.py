@@ -20,6 +20,7 @@ class OpenAIAdapter(OpenAICompatibleAdapter):
 def build_provider_adapter(context: ProviderBootstrapContext) -> OpenAIAdapter:
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         context.provider_config,
+        provider_id="openai",
         default_api_base=OpenAIAdapter.default_api_base,
         default_api_key_env=OpenAIAdapter.provider_api_key_env,
     )

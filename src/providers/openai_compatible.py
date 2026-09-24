@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import time
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -18,6 +20,65 @@ from src.providers.base import (
     StreamResult,
     provider_error_from_error_payload,
 )
+
+KNOWN_PROVIDER_API_HOSTS: dict[str, frozenset[str]] = {
+    "openai": frozenset({"api.openai.com"}),
+    "together": frozenset({"api.together.xyz"}),
+    "groq": frozenset({"api.groq.com"}),
+    "deepseek": frozenset({"api.deepseek.com"}),
+    "xai": frozenset({"api.x.ai"}),
+    "cerebras": frozenset({"api.cerebras.ai"}),
+    "perplexity": frozenset({"api.perplexity.ai"}),
+    "nvidia": frozenset({"integrate.api.nvidia.com"}),
+    "openrouter": frozenset({"openrouter.ai"}),
+}
+
+
+def validate_provider_api_base(
+    provider_id: str,
+    api_base: str,
+    *,
+    allow_custom_api_base: bool = False,
+) -> str:
+    """Validate a configured API base before constructing its HTTP client."""
+    value = api_base.strip()
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid API base URL for provider {provider_id!r}") from exc
+
+    if parsed.scheme.lower() != "https" or not hostname:
+        raise ValueError(f"provider {provider_id!r} API base must use HTTPS and include a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"provider {provider_id!r} API base must not contain credentials")
+    if parsed.fragment or parsed.query or "#" in value or "?" in value:
+        raise ValueError(f"provider {provider_id!r} API base must not contain a query or fragment")
+    if port not in (None, 443):
+        raise ValueError(f"provider {provider_id!r} API base must use port 443")
+    if "\\" in value or any(ord(char) < 32 or 0x7F <= ord(char) <= 0x9F for char in value):
+        raise ValueError(f"provider {provider_id!r} API base contains invalid URL characters")
+
+    normalized_host = hostname.lower().rstrip(".")
+    try:
+        ipaddress.ip_address(normalized_host)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"provider {provider_id!r} API base must use a DNS hostname")
+    if normalized_host == "localhost" or normalized_host.endswith(
+        (".localhost", ".local", ".internal")
+    ):
+        raise ValueError(f"provider {provider_id!r} API base must not use a local hostname")
+
+    known_hosts = KNOWN_PROVIDER_API_HOSTS.get(provider_id.lower(), frozenset())
+    if normalized_host not in known_hosts and not allow_custom_api_base:
+        raise ValueError(
+            f"provider {provider_id!r} API base host {normalized_host!r} is not approved; "
+            "set allow_custom_api_base: true to opt in"
+        )
+    return value
 
 
 def categorize_openai_compatible_error(
@@ -101,10 +162,16 @@ def categorize_openai_compatible_error(
 def resolve_openai_compatible_credentials(
     provider_config: Mapping[str, Any],
     *,
+    provider_id: str,
     default_api_base: str,
     default_api_key_env: str,
 ) -> tuple[str, str, str]:
     api_base = str(provider_config.get("api_base", default_api_base)).strip() or default_api_base
+    api_base = validate_provider_api_base(
+        provider_id,
+        api_base,
+        allow_custom_api_base=provider_config.get("allow_custom_api_base") is True,
+    )
     api_key_env = (
         str(provider_config.get("api_key_env", default_api_key_env)).strip() or default_api_key_env
     )
@@ -314,7 +381,8 @@ class OpenAICompatibleAdapter:
         body["stream"] = True
 
         client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout=None, connect=15.0, read=None, write=30.0, pool=15.0)
+            timeout=httpx.Timeout(timeout=None, connect=15.0, read=None, write=30.0, pool=15.0),
+            follow_redirects=False,
         )
         try:
             response = await client.send(
@@ -474,7 +542,7 @@ class OpenAICompatibleAdapter:
         for _attempt in range(max(int(self.max_retries), 1)):
             try:
                 async with (
-                    httpx.AsyncClient(timeout=timeout_seconds) as client,
+                    httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client,
                     client.stream(
                         method,
                         f"{self.api_base}{path}",

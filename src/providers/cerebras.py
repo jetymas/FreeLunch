@@ -20,6 +20,7 @@ class CerebrasAdapter(OpenAICompatibleAdapter):
 def build_provider_adapter(context: ProviderBootstrapContext) -> CerebrasAdapter:
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         context.provider_config,
+        provider_id="cerebras",
         default_api_base=CerebrasAdapter.default_api_base,
         default_api_key_env=CerebrasAdapter.provider_api_key_env,
     )

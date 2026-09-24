@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import math
+import os
 import re
 import threading
 from functools import lru_cache
@@ -35,6 +36,7 @@ _TEXT_PIECE_RE = re.compile(r"\s+|\w+|[^\w\s]", re.UNICODE)
 _JSON_MESSAGE_FIELDS = ("tool_calls", "function_call", "audio")
 _TEXT_MESSAGE_FIELDS = ("name", "tool_call_id", "refusal")
 _MODEL_HINT_SUFFIX_RE = re.compile(r":[A-Za-z0-9._-]+$")
+_HF_REPO_COMPONENT_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,94}[A-Za-z0-9])?\Z")
 _JSON_LIKE_RE = re.compile(r"^\s*[\[{].*[\]}]\s*$", re.DOTALL)
 _KNOWN_REPO_TOKEN_CASE = {
     "llama": "Llama",
@@ -375,7 +377,14 @@ def _candidate_hf_repo_ids(model_hint: str | None) -> tuple[str, ...]:
         return ()
 
     sanitized = _MODEL_HINT_SUFFIX_RE.sub("", hint)
+    # Provider model IDs are untrusted. Accept only a single Hugging Face
+    # namespace/repository pair; never pass URLs, filesystem paths, or nested
+    # repository paths to transformers.
+    if sanitized.count("/") != 1 or "\\" in sanitized:
+        return ()
     org, repo = sanitized.split("/", 1)
+    if not _is_safe_hf_repo_component(org) or not _is_safe_hf_repo_component(repo):
+        return ()
     candidates: list[str] = []
     for candidate in (sanitized, _canonicalize_repo_id(sanitized)):
         normalized = candidate.strip()
@@ -391,8 +400,20 @@ def _candidate_hf_repo_ids(model_hint: str | None) -> tuple[str, ...]:
     return tuple(candidates)
 
 
+def _is_safe_hf_repo_component(value: str) -> bool:
+    return bool(_HF_REPO_COMPONENT_RE.fullmatch(value)) and ".." not in value and "--" not in value
+
+
+def _hf_endpoint_is_trusted() -> bool:
+    """Use the official HTTPS Hub endpoint unless explicitly configured offline."""
+    endpoint = os.environ.get("HF_ENDPOINT")
+    if endpoint is None:
+        return True
+    return endpoint.rstrip("/") == "https://huggingface.co"
+
+
 def _load_hf_tokenizer_blocking(model_hint: str) -> Any | None:
-    if AutoTokenizer is None:
+    if AutoTokenizer is None or not _hf_endpoint_is_trusted():
         return None
     for repo_id in _candidate_hf_repo_ids(model_hint):
         try:
@@ -481,7 +502,7 @@ def _tokenizer_future_done(model_hint: str, future: concurrent.futures.Future[An
 
 def schedule_tokenizer_preload(model_hint: str | None) -> bool:
     normalized_hint = str(model_hint or "").strip()
-    if not normalized_hint or AutoTokenizer is None:
+    if not normalized_hint or AutoTokenizer is None or not _hf_endpoint_is_trusted():
         return False
     if _resolve_tiktoken_encoding(model_hint=normalized_hint) is not None:
         return False

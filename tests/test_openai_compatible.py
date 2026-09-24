@@ -520,6 +520,7 @@ def test_registry_register_configured_loads_openai_compatible_module_factories(m
     provider_bootstrap_config["xai"] = {
         "api_key_env": "XAI_CUSTOM_KEY",
         "api_base": "https://custom.x.ai/v1",
+        "allow_custom_api_base": True,
     }
     provider_bootstrap_config["openrouter"] = {}
 

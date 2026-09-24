@@ -20,6 +20,7 @@ class NvidiaAdapter(OpenAICompatibleAdapter):
 def build_provider_adapter(context: ProviderBootstrapContext) -> NvidiaAdapter:
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         context.provider_config,
+        provider_id="nvidia",
         default_api_base=NvidiaAdapter.default_api_base,
         default_api_key_env=NvidiaAdapter.provider_api_key_env,
     )

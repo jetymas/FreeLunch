@@ -20,6 +20,7 @@ class PerplexityAdapter(OpenAICompatibleAdapter):
 def build_provider_adapter(context: ProviderBootstrapContext) -> PerplexityAdapter:
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         context.provider_config,
+        provider_id="perplexity",
         default_api_base=PerplexityAdapter.default_api_base,
         default_api_key_env=PerplexityAdapter.provider_api_key_env,
     )

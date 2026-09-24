@@ -306,6 +306,57 @@ def test_candidate_hf_repo_ids_include_zai_org_alias_and_fp8_suffix():
     assert "zai-org/GLM-4.5-Air-FP8" in candidates
 
 
+def test_candidate_hf_repo_ids_reject_urls_paths_traversal_and_malformed_ids():
+    unsafe_hints = (
+        "https://huggingface.co/org/model",
+        "http://evil.example/org/model",
+        "org/model/extra",
+        "/local/model",
+        "../org/model",
+        "org/../model",
+        "org/model\\..\\secret",
+        "org/model?download=true",
+        "org/model#revision",
+        "org//model",
+        "org/.hidden",
+    )
+
+    for hint in unsafe_hints:
+        assert _candidate_hf_repo_ids(hint) == ()
+
+
+def test_schedule_tokenizer_preload_rejects_untrusted_hub_endpoint(monkeypatch):
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            raise AssertionError("must not load from an untrusted endpoint")
+
+    monkeypatch.setattr(tokens_module, "AutoTokenizer", _FakeAutoTokenizer)
+    monkeypatch.setenv("HF_ENDPOINT", "https://evil.example")
+    tokens_module._clear_hf_tokenizer_cache()
+
+    assert schedule_tokenizer_preload("qwen/qwen2.5-7b-instruct") is False
+
+
+def test_hf_tokenizer_loading_keeps_remote_code_disabled(monkeypatch):
+    calls: list[tuple[str, bool]] = []
+
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(repo_id, use_fast=True, trust_remote_code=True):
+            calls.append((repo_id, trust_remote_code))
+            raise OSError("stop after checking the safe load arguments")
+
+    monkeypatch.setattr(tokens_module, "AutoTokenizer", _FakeAutoTokenizer)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    tokens_module._clear_hf_tokenizer_cache()
+
+    tokens_module._load_hf_tokenizer_blocking("qwen/qwen2.5-7b-instruct")
+
+    assert calls
+    assert all(trust_remote_code is False for _, trust_remote_code in calls)
+
+
 def test_estimate_required_tokens_uses_deepseek_alias_repo_when_available(monkeypatch):
     class _FakeTokenizer:
         def encode(self, text, add_special_tokens=False):

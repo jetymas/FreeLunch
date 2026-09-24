@@ -14,6 +14,10 @@ This project loosely follows Keep a Changelog and uses semantic version tags for
 
 ### Added
 
+- Provider API base validation with an explicit custom HTTPS host opt-in, no
+  redirect following, and guarded Hugging Face repository/endpoint loading.
+- A non-root production container user and a scoped Compose data ownership
+  migration for existing SQLite bind mounts.
 - A native `systemd` user-service template, lifecycle runbook, and native CI
   startup/readiness/chat smoke check.
 - Configurable chat-body, upstream-response, and SSE-event limits plus stream

@@ -61,6 +61,7 @@ function Setup-InstallDir {
             Fail "Installation cancelled."
         }
         $script:Upgrading = $true
+        New-Item -ItemType Directory -Path (Join-Path $InstallDir "data") -Force | Out-Null
         return
     }
 
@@ -73,7 +74,15 @@ function Write-EnvFile {
         $content = Get-Content $envPath -Raw
         if ($content -notmatch "(?m)^FREELUNCH_IMAGE=") {
             Add-Content -Path $envPath -Value "`r`nFREELUNCH_IMAGE=$Image"
+            $content = Get-Content $envPath -Raw
         }
+        # Windows shared paths keep host-managed permissions. Never let a
+        # value carried over from a Linux install trigger container chown here.
+        if ($content -match "(?m)^FREELUNCH_ALLOW_DATA_CHOWN=") {
+            $content = [regex]::Replace($content, "(?m)^FREELUNCH_ALLOW_DATA_CHOWN=.*(?:\r?\n|$)", "")
+            Set-Content -Path $envPath -Value $content -Encoding UTF8
+        }
+        Add-Content -Path $envPath -Value "FREELUNCH_ALLOW_DATA_CHOWN=0"
         Protect-SecretFile $envPath
         return
     }
@@ -93,6 +102,7 @@ DATABASE_URL=data/freelunch.db
 APP_ENV=prod
 FREELUNCH_PORT=$gatewayPort
 FREELUNCH_IMAGE=$Image
+FREELUNCH_ALLOW_DATA_CHOWN=0
 "@ | Set-Content -Path (Join-Path $InstallDir ".env") -Encoding UTF8
     Protect-SecretFile (Join-Path $InstallDir ".env")
 }
@@ -173,9 +183,32 @@ logging:
 function Write-ComposeFile {
     @'
 services:
+  freelunch-data-migration:
+    image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
+    restart: "no"
+    user: "0:0"
+    command: ["/usr/local/bin/migrate-data-ownership"]
+    environment:
+      FREELUNCH_ALLOW_DATA_CHOWN: ${FREELUNCH_ALLOW_DATA_CHOWN:-0}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data:/app/data
   freelunch:
     image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
     restart: unless-stopped
+    user: "10001:10001"
+    depends_on:
+      freelunch-data-migration:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:${FREELUNCH_PORT:-8000}:8000"
     env_file:

@@ -258,7 +258,8 @@ class OpenRouterAdapter:
         body["stream"] = True
 
         client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout=None, connect=15.0, read=None, write=30.0, pool=15.0)
+            timeout=httpx.Timeout(timeout=None, connect=15.0, read=None, write=30.0, pool=15.0),
+            follow_redirects=False,
         )
         try:
             response = await client.send(
@@ -398,7 +399,7 @@ class OpenRouterAdapter:
         for _attempt in range(3):
             try:
                 async with (
-                    httpx.AsyncClient(timeout=timeout_seconds) as client,
+                    httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client,
                     client.stream(
                         method,
                         f"{self.api_base}{path}",

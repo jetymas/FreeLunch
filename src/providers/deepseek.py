@@ -20,6 +20,7 @@ class DeepSeekAdapter(OpenAICompatibleAdapter):
 def build_provider_adapter(context: ProviderBootstrapContext) -> DeepSeekAdapter:
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         context.provider_config,
+        provider_id="deepseek",
         default_api_base=DeepSeekAdapter.default_api_base,
         default_api_key_env=DeepSeekAdapter.provider_api_key_env,
     )

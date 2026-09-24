@@ -92,7 +92,7 @@ flowchart LR
 | `src.providers.openai_compatible` | `src.providers.base` | `httpx` |
 | `src.providers.openrouter` | `src.providers.base` | `httpx` |
 | `src.providers.perplexity` | `src.providers.openai_compatible`, `src.providers.registry` | — |
-| `src.providers.registry` | `src.config`, `src.providers.base`, `src.providers.cerebras`, `src.providers.deepseek`, `src.providers.groq`, `src.providers.nvidia`, `src.providers.openai`, `src.providers.openrouter`, `src.providers.perplexity`, `src.providers.together`, `src.providers.xai` | — |
+| `src.providers.registry` | `src.config`, `src.providers.base`, `src.providers.cerebras`, `src.providers.deepseek`, `src.providers.groq`, `src.providers.nvidia`, `src.providers.openai`, `src.providers.openai_compatible`, `src.providers.openrouter`, `src.providers.perplexity`, `src.providers.together`, `src.providers.xai` | — |
 | `src.providers.together` | `src.providers.openai_compatible`, `src.providers.registry` | — |
 | `src.providers.xai` | `src.providers.openai_compatible`, `src.providers.registry` | — |
 | `src.proxy` | `src.config`, `src.db`, `src.health`, `src.providers.base`, `src.routing`, `src.runtime_logging`, `src.secret_store`, `src.security_throttle`, `src.tokens` | `fastapi` |

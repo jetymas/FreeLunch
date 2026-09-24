@@ -178,6 +178,9 @@ write_env_file() {
         if ! grep -q '^FREELUNCH_IMAGE=' "${INSTALL_DIR}/.env"; then
             printf '\nFREELUNCH_IMAGE=%s\n' "$IMAGE" >> "${INSTALL_DIR}/.env"
         fi
+        if ! grep -q '^FREELUNCH_ALLOW_DATA_CHOWN=' "${INSTALL_DIR}/.env"; then
+            printf 'FREELUNCH_ALLOW_DATA_CHOWN=1\n' >> "${INSTALL_DIR}/.env"
+        fi
         chmod 600 "${INSTALL_DIR}/.env"
         return
     fi
@@ -196,6 +199,7 @@ DATABASE_URL=data/freelunch.db
 APP_ENV=prod
 FREELUNCH_PORT=${gateway_port}
 FREELUNCH_IMAGE=${IMAGE}
+FREELUNCH_ALLOW_DATA_CHOWN=1
 EOF
     chmod 600 "${INSTALL_DIR}/.env"
 }
@@ -263,9 +267,32 @@ EOF
 write_compose_file() {
     cat > "${INSTALL_DIR}/docker-compose.yml" <<'EOF'
 services:
+  freelunch-data-migration:
+    image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
+    restart: "no"
+    user: "0:0"
+    command: ["/usr/local/bin/migrate-data-ownership"]
+    environment:
+      FREELUNCH_ALLOW_DATA_CHOWN: ${FREELUNCH_ALLOW_DATA_CHOWN:-0}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data:/app/data
   freelunch:
     image: ${FREELUNCH_IMAGE:-ghcr.io/jetymas/freelunch:latest}
     restart: unless-stopped
+    user: "10001:10001"
+    depends_on:
+      freelunch-data-migration:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:${FREELUNCH_PORT:-8000}:8000"
     env_file:

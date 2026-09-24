@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from src.providers.base import ProviderAdapter, ProviderErrorCategorization
+from src.providers.openai_compatible import validate_provider_api_base
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -45,6 +46,11 @@ def _openrouter_adapter_factory(context: ProviderBootstrapContext) -> ProviderAd
     api_base = str(config.get("api_base", settings.openrouter_api_base)).strip()
     if not api_base:
         api_base = settings.openrouter_api_base
+    api_base = validate_provider_api_base(
+        "openrouter",
+        api_base,
+        allow_custom_api_base=config.get("allow_custom_api_base") is True,
+    )
 
     dev_stub_enabled = bool(config.get("dev_stub_enabled", settings.openrouter_dev_stub_enabled))
     dev_stub_enabled = settings.app_env == "dev" and dev_stub_enabled
@@ -130,8 +136,27 @@ class ProviderRegistry:
                 provider_id=provider_id,
                 provider_config=settings.get_provider_bootstrap_config(provider_id),
             )
+            configured_api_base = context.provider_config.get("api_base")
+            if configured_api_base is not None:
+                validate_provider_api_base(
+                    provider_id,
+                    str(configured_api_base),
+                    allow_custom_api_base=(
+                        context.provider_config.get("allow_custom_api_base") is True
+                    ),
+                )
+            adapter = descriptor.factory(context)
+            adapter_api_base = getattr(adapter, "api_base", None)
+            if isinstance(adapter_api_base, str):
+                validate_provider_api_base(
+                    provider_id,
+                    adapter_api_base,
+                    allow_custom_api_base=(
+                        context.provider_config.get("allow_custom_api_base") is True
+                    ),
+                )
             self.register(
-                descriptor.factory(context),
+                adapter,
                 name=provider_id,
                 discovery_enabled=settings.is_provider_discovery_enabled(provider_id),
                 inference_enabled=settings.is_provider_inference_enabled(provider_id),

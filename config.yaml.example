@@ -41,6 +41,7 @@ providers:
     inference_enabled: true
     dev_stub_enabled: false   # Dev-only no-key stub. Ignored outside APP_ENV=dev.
     api_base: "https://openrouter.ai/api/v1"
+    # allow_custom_api_base: true  # Explicit opt-in for an unlisted HTTPS host.
     active_probe_enabled: true  # Provider-level active probe gate.
 
   # OpenAI-compatible provider onboarding pattern:
@@ -50,6 +51,7 @@ providers:
   #   inference_enabled: true
   #   active_probe_enabled: true
   #   api_base: "https://api.openai.com/v1"
+  #   allow_custom_api_base: false  # Set true only for a trusted custom HTTPS host.
   #   api_key_env: "OPENAI_API_KEY"
   #
   # together:

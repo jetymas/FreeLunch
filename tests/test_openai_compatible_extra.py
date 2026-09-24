@@ -30,9 +30,11 @@ def test_resolve_openai_compatible_credentials_falls_back_to_config_api_key(monk
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         {
             "api_base": " https://custom.example/v1/ ",
+            "allow_custom_api_base": True,
             "api_key_env": " CUSTOM_ENV ",
             "api_key": " config-key ",
         },
+        provider_id="openai",
         default_api_base="https://default.example/v1",
         default_api_key_env="DEFAULT_ENV",
     )

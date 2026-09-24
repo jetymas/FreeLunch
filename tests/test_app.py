@@ -270,6 +270,7 @@ providers:
     discovery_enabled: true
     inference_enabled: true
     api_base: https://openai.custom/v1
+    allow_custom_api_base: true
 """,
     ) as client:
         setup_response = client.post(
@@ -1156,6 +1157,7 @@ providers:
     discovery_enabled: true
     inference_enabled: true
     api_base: https://openai.custom/v1
+    allow_custom_api_base: true
     api_key_env: OPENAI_CUSTOM_KEY
 """,
     ) as client:

@@ -30,8 +30,13 @@ The installer asks for `OPENROUTER_API_KEY`, writes deployment files under `~/.f
 cp config.yaml.example config.yaml
 cp .env.example .env
 # Set OPENROUTER_API_KEY in .env, then:
+# On Linux, set FREELUNCH_ALLOW_DATA_CHOWN=1 in .env for the first start.
 docker compose up -d
 ```
+
+The container runs as UID/GID `10001:10001`; Compose repairs legacy Linux
+data ownership before starting it. For Docker Desktop upgrades, see the
+[data ownership procedure](./docs/operations.md#deployment-modes).
 
 ### Native Python run
 

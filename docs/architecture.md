@@ -90,6 +90,15 @@ tokenizer metadata as untrusted input. Provider credentials and the gateway
 bearer token are secrets. The admin API and UI are privileged operations and
 must be protected by gateway auth plus suitable network controls before remote
 exposure. Remote tokenizer loading uses `trust_remote_code=False`.
+Provider API bases are limited to built-in HTTPS hosts unless a provider is
+explicitly opted in to a custom public HTTPS host. Redirects are not followed.
+Remote tokenizer identifiers are restricted to namespace/repository IDs on the
+official HTTPS Hugging Face Hub endpoint; invalid hints fall back to local
+heuristics.
+The production container runs the application as UID/GID `10001:10001`. A
+separate one-shot Compose service can repair ownership only on its dedicated
+SQLite data mount before the application starts; the operator controls that
+repair through a deployment flag.
 
 ## Code-driven mapping
 

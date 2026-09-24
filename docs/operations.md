@@ -20,6 +20,19 @@ cp .env.example .env
 docker compose up -d
 ```
 
+The Compose application runs as UID/GID `10001:10001`. A one-shot migration
+service runs before it and mounts only `data/`. For Linux checkout installs,
+set `FREELUNCH_ALLOW_DATA_CHOWN=1` in `.env` before the first Compose start;
+this permits a one-time ownership repair of an existing root-owned
+SQLite database and its WAL/SHM files. Back up `data/` first when upgrading.
+The Linux installer sets this flag. The PowerShell installer keeps it disabled
+because Docker Desktop bind mounts use host-managed permissions. On Windows,
+the migration checks write access as the application UID and stops with an
+error if access must be granted on the host. Do not enable recursive chown on
+a Windows shared path. If root-owned files are later restored into an already
+migrated Linux data directory, stop Compose, back up the data, remove only
+`data/.freelunch-ownership-v1`, and start Compose to rerun the repair.
+
 For native execution:
 
 ```bash
@@ -144,6 +157,13 @@ Use `config.yaml.example` for current keys and defaults. Provider credential
 resolution and provider gates are implemented in `src/config.py` and
 `src/providers/registry.py`; do not duplicate provider lists here.
 
+Provider API bases must use HTTPS on port 443. Built-in provider hosts are
+accepted by default. To use another trusted public host, set
+`providers.<id>.allow_custom_api_base: true` alongside its `api_base`; local
+hostnames, IP addresses, URL credentials, queries, and fragments remain
+invalid. Keep this opt-in scoped to the provider whose credentials may be sent
+to that host. Provider HTTP clients do not follow redirects.
+
 Keep `.env` and populated config files out of version control. Prefer the
 encrypted managed secret vault for runtime provider keys. Gateway auth is a
 separate control: enable it before exposing client or admin endpoints beyond a
@@ -210,7 +230,18 @@ assets from Hugging Face unless they are already cached or offline mode is
 configured. The request path does not call a remote token-count API. Preload is
 best effort and may be cancelled during shutdown. Inspect
 `token_estimation_review` in `/admin/health` when investigating context failures
-or estimate drift.
+or estimate drift. Remote tokenizer hints must be single namespace/repository
+IDs, and tokenizer loading accepts only the official HTTPS Hugging Face Hub
+endpoint. A custom `HF_ENDPOINT` disables remote tokenizer loading; heuristic
+fallback remains available. Remote tokenizer code execution stays disabled.
+
+Before considering removal of optional exact tokenizers, collect live review
+data with at least the report's minimum sample count per family and compare
+provider-reported prompt usage against request estimates. The report does not
+identify which estimator produced each request's count, and provider usage may
+include serialization overhead. A fixed, prompt-redacted comparison of exact
+and heuristic counts on the same requests is still needed to assess the value
+of the optional package. Do not infer production accuracy from test databases.
 
 ## Persistence and lifecycle
 

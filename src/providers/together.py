@@ -20,6 +20,7 @@ class TogetherAdapter(OpenAICompatibleAdapter):
 def build_provider_adapter(context: ProviderBootstrapContext) -> TogetherAdapter:
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         context.provider_config,
+        provider_id="together",
         default_api_base=TogetherAdapter.default_api_base,
         default_api_key_env=TogetherAdapter.provider_api_key_env,
     )

@@ -20,6 +20,7 @@ class GroqAdapter(OpenAICompatibleAdapter):
 def build_provider_adapter(context: ProviderBootstrapContext) -> GroqAdapter:
     api_key, api_base, api_key_env = resolve_openai_compatible_credentials(
         context.provider_config,
+        provider_id="groq",
         default_api_base=GroqAdapter.default_api_base,
         default_api_key_env=GroqAdapter.provider_api_key_env,
     )
